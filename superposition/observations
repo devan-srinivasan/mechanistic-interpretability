@@ -1,6 +1,0 @@
-I can reproduce superposition results from original paper
-
-weird_abs... i see superposition in encoder model but all amongst first 5 features
-abs_smallint_..._0.99 i see very weird grid-like superposition. i varied importance between 0.7 & 0.9 and see the same thing, 
-    same if S = 0.999. similar to paper but no diagonal of features. when i square the importance (I^2i) then we see less superposition
-    and more focus on the first few features
