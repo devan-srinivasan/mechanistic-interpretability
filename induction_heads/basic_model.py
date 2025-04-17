@@ -4,13 +4,13 @@ from tqdm import tqdm
 from vis import plot_heatmap
 
 # ---- Config ----
-VOCAB = list(range(1, 10))  # [1..9]
-VOCAB_SIZE = len(VOCAB) + 1  # +1 for <s>
-IDX_TO_TOKEN = ['<s>'] + [str(i) for i in VOCAB]
+VOCAB = list(range(0, 6))  # [1..9]
+VOCAB_SIZE = len(VOCAB) # must equal dim size
+IDX_TO_TOKEN = [str(i) for i in VOCAB]
 TOKEN_TO_IDX = {tok: i for i, tok in enumerate(IDX_TO_TOKEN)}
 
-SEQ_LEN = 6
-EMBED_DIM = 10
+SEQ_LEN = 5     # 6, must be <= vocab size
+EMBED_DIM = 6   # 10    # must be EVEN
 NUM_HEADS = 1
 NUM_LAYERS = 2
 EPOCHS = 100000
@@ -143,8 +143,8 @@ class TinyTransformerAttnOnly(nn.Module):
 
 # ---- Dataset ----
 def generate_sequence():
-    prefix = random.sample(VOCAB, 5)
-    idx = random.randint(0, 3)  # choose an earlier number
+    prefix = random.sample(VOCAB, SEQ_LEN - 1)
+    idx = random.randint(0, len(prefix) - 2)  # choose an earlier number
     query = prefix[idx]
     target = prefix[idx + 1]
     seq = prefix + [query]
@@ -209,14 +209,13 @@ def test_model(n=100):
             # if not correct: print(f"{seq} => {predicted}{'('+target+')' if target != pred else ''}")
     print(f"{num_correct}/{n}")
 
-# if __name__ == "__main__":
-#     train_model()
-#     test_model(1000)
+# train_model()
+test_model(1000)
 
 model = load_model()
 
-# x = torch.tensor([9, 1, 5, 2, 3, 1])
-# o = model.forward(x)
+p, t, _ = pred(model, [1, 2, 3, 4, 2], 3)
+print(f"Predicted: {p} expected {t}")
 block1, block2 = model.transformer_blocks
 
 # block1 attention weights
