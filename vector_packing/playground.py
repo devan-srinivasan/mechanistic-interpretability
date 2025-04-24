@@ -127,36 +127,32 @@ def projection_matrix(u: np.ndarray) -> np.ndarray:
     u = u.reshape(-1, 1)  # convert to column vector
     return (u @ u.T) / (u.T @ u)
 
-def generate_quadratic_phase_matrix(p):
-    # All values of x in F_p
+def generate_quadratic_phase_matrix(p, width=None):
     x = np.arange(p)[None, :]  # shape (1, p)
 
-    # All possible values for a, b in F_p
-    a = np.arange(p)
-    b = np.arange(p)
+    if width is None:
+        # Full F_p × F_p grid
+        a = np.arange(p)
+        b = np.arange(p)
+    else:
+        k = int(np.sqrt(width))
+        assert k * k == width, "width must be a perfect square"
+        assert k <= p, "√width must be ≤ p"
+        a = np.arange(k)
+        b = np.arange(k)
 
-    # Create grid of all (a, b) pairs
-    a_grid, b_grid = np.meshgrid(a, b, indexing='ij')  # shape (p, p)
-    a_flat = a_grid.reshape(-1, 1)  # shape (p^2, 1)
-    b_flat = b_grid.reshape(-1, 1)  # shape (p^2, 1)
+    # Create grid of (a, b) pairs
+    a_grid, b_grid = np.meshgrid(a, b, indexing='ij')  # shape (k, k) or (p, p)
+    a_flat = a_grid.reshape(-1, 1)  # shape (width, 1)
+    b_flat = b_grid.reshape(-1, 1)  # shape (width, 1)
 
-    # Compute ax^2
-    ax2 = (a_flat * (x ** 2)) % p  # shape (p^2, p)
-
-    # Compute bx
-    bx = (b_flat * x) % p  # shape (p^2, p)
-
-    # Compute a x^2 + b x
-    exponent = (ax2 + bx) % p  # shape (p^2, p)
-
-    # Compute complex exponential e^{2πi (ax^2 + bx)/p}
+    # Compute ax^2 + bx mod p
+    exponent = (a_flat * x**2 + b_flat * x) % p  # shape (width, p)
     angles = 2 * np.pi * exponent / p
-    complex_vals = np.exp(1j * angles) / np.sqrt(p)  # shape (p^2, p)
+    complex_vals = np.exp(1j * angles) / np.sqrt(p)
 
-    # Convert to real-valued 2p vectors: [Re, Im]
-    V_real = complex_vals.real  # shape (p^2, p)
-    V_imag = complex_vals.imag  # shape (p^2, p)
-    V = np.concatenate([V_real, V_imag], axis=1)  # shape (p^2, 2p)
+    # Convert to real-valued 2p vectors
+    V = np.concatenate([complex_vals.real, complex_vals.imag], axis=1)  # shape (width, 2p)
 
     return V
 
@@ -187,25 +183,96 @@ def next_prime(n):
     """Find the smallest prime greater than n."""
     if n < 2:
         return 2
-    candidate = n + 1 if n % 2 == 0 else n + 2
+    candidate = n + 1 if n % 2 == 0 else n
     while not is_prime(candidate):
         candidate += 2
     return candidate
 
-def tao_construction(dim: int):
-    p = next_prime(dim)
-    sbasis = generate_quadratic_phase_matrix(p)
+def tao_construction(n_vecs: int, dim: int = None, width: int = None) -> np.ndarray:
+    """
+    will return atleast p^2 semi-orthogonal 2p dimensional vectors V with pairwise inner products of 
+    at most 1/root(p). p^2 >= n_vecs is ensured.
+    """
+    if dim is None:
+        p = next_prime(int(np.ceil(np.sqrt(n_vecs))))
+    else:
+        p = next_prime(int(dim // 2) + dim % 2)
+    print(p)
+    sbasis = generate_quadratic_phase_matrix(p, width=width)
     return sbasis
 
-def test_error(sbasis: np.ndarray):
+def random_construction(n_vecs: int, dim: int, sample: int = 5000, k: int = 10):
+    vecs = np.random.randn(sample, dim)
+    vecs = vecs / np.linalg.norm(vecs, axis=1, keepdims=True)
+    S = np.abs(vecs @ vecs.T)
+    # beam search now
+    best_idxs = beam_search(S, n_vecs, k)
+    assert(best_idxs.shape[0] == n_vecs)
+    return vecs[best_idxs]
+
+def beam_search(S: np.ndarray, n: int, k: int):
+    num_nodes = S.shape[0]
+
+    # Step 1: Initialize beams with lowest average similarities
+    initial_scores = S.mean(axis=1)
+    beams = np.argsort(initial_scores)[:k].reshape(k, 1)  # shape (k, 1)
+
+    for _ in tqdm(range(n - 1)):
+        # Step 2: For each beam, we want to expand it with k new completions
+
+        # Flatten beams so we can vectorize
+        num_beams = beams.shape[0]
+
+        # Build a (num_beams, num_nodes) boolean mask where True = candidate
+        candidate_mask = np.ones((num_beams, num_nodes), dtype=bool)
+        for i, beam in enumerate(beams):
+            candidate_mask[i, beam] = False  # mask out existing nodes
+
+        # Compute score: for each beam, get the *max* similarity between current cluster and all others
+        # shape of S[beam][:, candidate]: (len(beam), num_nodes), max over axis=0 gives (num_nodes,)
+        max_scores = np.full((num_beams, num_nodes), np.inf)
+        for i, beam in enumerate(beams):
+            max_scores[i] = S[beam][:, :].max(axis=0)  # max sim between beam and each candidate
+
+        # Mask out ineligible candidates (already in beam)
+        max_scores[~candidate_mask] = np.inf
+
+        # Now for each beam, pick the k lowest-scoring nodes (i.e., low similarity)
+        topk_indices = np.argpartition(max_scores, kth=k, axis=1)[:, :k]  # shape (num_beams, k)
+
+        # Gather new candidate beams (shape: num_beams * k, beam_len + 1)
+        # Repeat each beam `k` times
+        repeated_beams = np.repeat(beams, k, axis=0)  # shape (k^2, beam_len)
+
+        # Flatten top-k new nodes to append
+        new_nodes = topk_indices.flatten()            # shape (k^2,)
+
+        # Concatenate to form new beams
+        new_beams = np.concatenate(
+            [repeated_beams, new_nodes[:, None]],
+            axis=1
+        )  # shape (k^2, beam_len + 1)
+
+        # Get scores for each new node
+        beam_indices = np.repeat(np.arange(k), k)     # shape (k^2,)
+        new_scores = max_scores[beam_indices, new_nodes]  # shape (k^2,)
+
+        # Pick top k by score
+        topk = np.argsort(new_scores)[:k]
+        beams = new_beams[topk]
+
+    return beams[0]
+
+def test_complete_combined_error(sbasis: np.ndarray, indices: np.ndarray = None, n_components: int = 5):
     S = sbasis @ sbasis.T - np.eye(sbasis.shape[0])
     e = 0.05
-    G = (np.abs(S) < e) * np.ones(sbasis.shape[0])
+    # G = (np.abs(S) < e) * np.ones(sbasis.shape[0])
 
-    n_components = sbasis.shape[0]
     # indices = np.random.randint(dim, sbasis.shape[0], (n_components,))
-    indices = np.random.choice(sbasis.shape[0], size=(n_components,), replace=False)   # must work since they are completely orthogonal
-
+    if indices is None:
+        indices = np.random.choice(sbasis.shape[0], size=(n_components,), replace=False)   # must work since they are completely orthogonal
+    else:
+        n_components = indices.shape[0]
     vector_components = sbasis[indices]
     # scalars = np.ones((n_components,1)) * 50
     scalars = np.random.randint(1, 1000, (n_components,1))
@@ -234,3 +301,5 @@ Norm Error:
     Max: {norm_error.max().item():.4f}
     Mean: {norm_error.mean().item():.4f}
     """)
+
+
