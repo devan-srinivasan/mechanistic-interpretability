@@ -1,4 +1,7 @@
 *cache*/
 *models*/
-.vnv/
+.*
 fast-JL-transform/
+runs/
+tmp/
+wandb/
