@@ -5,14 +5,14 @@ from basis import tao_construction
 from vis import plot_matrices, plot_lines, plot_matrix
 
 # with open("/Users/mrmackamoo/Projects/mechanistic-interpretability/understanding_superposition/data/mpnet2_words.json", "r") as f:
-#     dictionary = json.load(f)
+#     all_words = json.load(f)
 
 basis = tao_construction(0, 50, width=225)
 
 mpnet = SentenceTransformer('sentence-transformers/all-mpnet-base-v2')
 embedding_module = mpnet[0].auto_model.embeddings.word_embeddings
 
-words = ["runner", "run", "player", "play", "walker", "walk"]
+words = ["apple", "banana", "red", "human",]
 
 with torch.no_grad():
     # may need to batch this if too large
@@ -28,18 +28,33 @@ model = load_model(
 
 model.to(embeddings.device)
 
-reconstructed = model(embeddings)
 codes = model.encoder(embeddings)
 
 basis = torch.tensor(basis, device=codes.device, dtype=codes.dtype)
 
-print(codes.shape)
+def axis_knn(codes, axes: list[int] = [], k=5):
+    from sklearn.neighbors import NearestNeighbors
+    if axes:
+        codes_np = codes[:, axes].detach().cpu().numpy()
+    else:
+        codes_np = codes.detach().cpu().numpy()
+    nbrs = NearestNeighbors(n_neighbors=k+1).fit(codes_np)
+    distances, indices = nbrs.kneighbors(codes_np)
+    return indices[:, 1:]  # exclude self
 
-cosine_sim_matrix = torch.nn.functional.cosine_similarity(
-    codes.unsqueeze(1), codes.unsqueeze(0), dim=-1
-)
+def decision_tree(codes, labels):
+    from sklearn.tree import DecisionTreeClassifier
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import accuracy_score
 
-codes_scaled = 2 * (codes - codes.min()) / (codes.max() - codes.min()) - 1
-codes_scaled = codes_scaled.detach().to("cpu")
+    codes_np = codes.detach().cpu().numpy()
+    X_train, X_test, y_train, y_test = train_test_split(codes_np, labels, test_size=0.2, random_state=42)
 
-plot_matrices([codes_scaled[:, i: i+15] for i in range(0, codes.shape[1], 15)])
+    clf = DecisionTreeClassifier(max_depth=5)
+    clf.fit(X_train, y_train)
+
+    y_pred = clf.predict(X_test)
+    accuracy = accuracy_score(y_test, y_pred)
+    print(f"Decision Tree Accuracy: {accuracy:.4f}")
+
+    return clf

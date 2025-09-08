@@ -21,7 +21,7 @@ from datetime import datetime
 import wandb
 from dotenv import load_dotenv
 
-load_dotenv(path="/Users/mrmackamoo/Projects/mechanistic-interpretability/.env")
+load_dotenv(dotenv_path="/Users/mrmackamoo/Projects/mechanistic-interpretability/.env")
 
 # -------------------------
 # Encoder and Decoder
@@ -36,6 +36,7 @@ class Encoder(nn.Module):
             layers.append(nn.ReLU())
             prev_dim = hd
         layers.append(nn.Linear(prev_dim, code_dim))
+        layers.append(nn.Tanh())  # constrain codes to [-1, 1]
         self.net = nn.Sequential(*layers)
 
     def forward(self, x):
@@ -176,6 +177,10 @@ def train(args: argparse.Namespace, model: AutoencoderWithBasis, train_dataloade
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = f"{args.save_dir}/{timestamp}"
     os.makedirs(output_dir, exist_ok=True)
+
+    # Print number of trainable parameters
+    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Number of trainable parameters in model: {num_params}")
 
     # Device setup
     if torch.backends.mps.is_available():

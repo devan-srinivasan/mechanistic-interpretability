@@ -1,10 +1,9 @@
 import torch
 import numpy as np
-import plotly.subplots as sp
+import math
 import plotly.graph_objects as go
-import plotly.express as px
-from typing import Optional, List, Union
 from plotly.subplots import make_subplots
+from typing import Optional, List, Union
 
 def plot_lines(x: torch.Tensor, y: torch.Tensor, colours: Optional[List[str]] = None) -> None:
     """
@@ -17,6 +16,7 @@ def plot_lines(x: torch.Tensor, y: torch.Tensor, colours: Optional[List[str]] = 
     """
     fig = go.Figure()
     num_lines = x.shape[0]
+    assert(len(colours) == num_lines if colours else True), "Length of colours must match number of lines"
     
     for i in range(num_lines):
         fig.add_trace(go.Scatter(
@@ -26,41 +26,100 @@ def plot_lines(x: torch.Tensor, y: torch.Tensor, colours: Optional[List[str]] = 
             line=dict(color=colours[i] if colours else None),
             name=f'Line {i}'
         ))
+
+    fig.update_layout(
+        template="plotly_white",
+        margin=dict(l=40, r=40, t=40, b=40),
+        xaxis_title="X",
+        yaxis_title="Y"
+    )
+    fig.show()
+
+
+def plot_matrices(matrices: List[Union[torch.Tensor, np.ndarray]]) -> None:
+    """
+    Plot multiple matrices as tiled heatmaps using Plotly.
+    Automatically arranges them in a grid with a red-blue color scale [-1, 1].
+    
+    Args:
+        matrices (list): List of 2D matrices (torch.Tensor or np.ndarray)
+    """
+    if len(matrices) == 0:
+        return
+    
+    # Convert to numpy
+    matrices = [m.numpy() if isinstance(m, torch.Tensor) else m for m in matrices]
+
+    num_matrices = len(matrices)
+    cols = math.ceil(math.sqrt(num_matrices))
+    rows = math.ceil(num_matrices / cols)
+
+    fig = make_subplots(rows=rows, cols=cols, subplot_titles=[f"Matrix {i}" for i in range(num_matrices)])
+
+    for i, matrix in enumerate(matrices):
+        row = i // cols + 1
+        col = i % cols + 1
+        fig.add_trace(
+            go.Heatmap(
+                z=matrix,
+                colorscale="RdBu",
+                zmin=-1,
+                zmax=1,
+                showscale=(i == num_matrices - 1)  # only show scale for last plot to save space
+            ),
+            row=row,
+            col=col
+        )
+
+    fig.update_layout(
+        template="plotly_white",
+        height=max(300, rows * 300),
+        width=max(300, cols * 300),
+        margin=dict(l=10, r=10, t=40, b=10),
+    )
+
+    # Remove tick labels for a cleaner look
+    fig.update_xaxes(showticklabels=False)
+    fig.update_yaxes(showticklabels=False)
     
     fig.show()
 
-def plot_heatmap(matrices: List[Union[torch.Tensor, np.ndarray]]) -> None:
-    """
-    Display multiple heatmaps side by side without axes, ensuring square cells.
+    # Remove tick labels for a cleaner look
+    fig.update_xaxes(showticklabels=False)
+    fig.update_yaxes(showticklabels=False)
     
-    Args:
-        matrices (list): A list of 2D matrices (torch.Tensor or np.ndarray).
+    fig.show()
+
+
+def plot_matrix(matrix: Union[torch.Tensor, np.ndarray]) -> None:
     """
-    with torch.no_grad():
-        # Convert to numpy if torch tensors
-        matrices = [m.numpy() if isinstance(m, torch.Tensor) else m for m in matrices]
-        
-        num_matrices = len(matrices)
-        fig = make_subplots(rows=1, cols=num_matrices, horizontal_spacing=0.15)
+    Plot a single matrix as a heatmap using Plotly.
+    Automatically scales the figure size to fit the matrix.
+    """
+    if isinstance(matrix, torch.Tensor):
+        matrix = matrix.numpy()
 
-        for i, mat in enumerate(matrices):
-            fig.add_trace(
-                go.Heatmap(
-                    z=mat, 
-                    showscale=False, 
-                    colorscale='RdBu',
-                    zmin=-1,
-                    zmax=1
-                ),
-                row=1, col=i+1
-            )
+    n_rows, n_cols = matrix.shape
+    cell_size = 40
+    width = max(300, min(1000, cell_size * n_cols))
+    height = max(300, min(1000, cell_size * n_rows))
 
-        fig.update_layout(
-            showlegend=False,
-            width=300 * num_matrices,  # Adjust width dynamically based on number of plots
-            height=400,
-            margin=dict(l=10, r=10, t=10, b=10),
-            paper_bgcolor="white",
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=matrix,
+            colorscale="RdBu",
+            zmin=-1,
+            zmax=1,
+            showscale=True
         )
+    )
 
-        fig.show()
+    fig.update_layout(
+        width=width,
+        height=height,
+        margin=dict(l=10, r=10, t=40, b=10),
+        paper_bgcolor="white",
+        xaxis=dict(showticklabels=False),
+        yaxis=dict(showticklabels=False)
+    )
+    fig.show()
