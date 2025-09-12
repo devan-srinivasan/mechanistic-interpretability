@@ -4,6 +4,7 @@ import math
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from typing import Optional, List, Union
+import numpy as np
 
 def plot_lines(x: torch.Tensor, y: torch.Tensor, colours: Optional[List[str]] = None) -> None:
     """
@@ -84,12 +85,6 @@ def plot_matrices(matrices: List[Union[torch.Tensor, np.ndarray]]) -> None:
     
     fig.show()
 
-    # Remove tick labels for a cleaner look
-    fig.update_xaxes(showticklabels=False)
-    fig.update_yaxes(showticklabels=False)
-    
-    fig.show()
-
 
 def plot_matrix(matrix: Union[torch.Tensor, np.ndarray]) -> None:
     """
@@ -123,3 +118,61 @@ def plot_matrix(matrix: Union[torch.Tensor, np.ndarray]) -> None:
         yaxis=dict(showticklabels=False)
     )
     fig.show()
+
+
+def plot_clusters(labels: List[str], cluster_heads: List[int]) -> None:
+    """
+    Plot clusters as tight pools at geometrically spaced points on a circle.
+    Each cluster's points are tightly grouped at a unique location on the circle.
+    Hovering shows the label.
+    
+    Args:
+        labels (List[str]): List of labels for each point.
+        cluster_heads (List[int]): List of cluster assignments (same length as labels).
+    """
+    import plotly.express as px
+
+    # Find unique clusters
+    unique_clusters = sorted(set(cluster_heads))
+    n_clusters = len(unique_clusters)
+
+    # Arrange cluster centers on a circle
+    cluster_centers = [
+        (np.cos(2 * np.pi * i / n_clusters), np.sin(2 * np.pi * i / n_clusters))
+        for i in range(n_clusters)
+    ]
+
+    # Assign points for each cluster: tightly around its center
+    x, y, text, color = [], [], [], []
+    cluster_spread = 0.05  # controls tightness of cluster
+    rng = np.random.default_rng(42)
+    for idx, cluster in enumerate(unique_clusters):
+        center_x, center_y = cluster_centers[idx]
+        indices = [i for i, c in enumerate(cluster_heads) if c == cluster]
+        for i in indices:
+            # Add small random jitter so points don't overlap exactly
+            px_ = center_x + cluster_spread * rng.normal()
+            py_ = center_y + cluster_spread * rng.normal()
+            x.append(px_)
+            y.append(py_)
+            text.append(labels[i])
+            color.append(str(cluster))
+
+    fig = px.scatter(
+        x=x, y=y, color=color, hover_name=text,
+        labels={'color': 'Cluster'},
+        title="Clusters Geometrically Spaced on a Circle"
+    )
+    fig.update_traces(marker=dict(size=8, line=dict(width=1, color='DarkSlateGrey')))
+    fig.update_layout(template="plotly_white")
+    fig.show()
+
+# Generate dummy data: 10 clusters, 10 fruits, each fruit replicated 2800 times
+# fruits = ["apple", "banana", "cherry", "date", "fig", "grape", "kiwi", "lemon", "mango", "nectarine"]
+# num_clusters = 10
+# replications = 2200
+
+# labels = fruits * replications  # 10 fruits * 2200 = 22,000 labels
+# cluster_heads = [i for i in range(num_clusters) for _ in range(replications)]  # 10 clusters, each with 2200 points
+
+# plot_clusters(labels, cluster_heads)

@@ -4,15 +4,15 @@ from sentence_transformers import SentenceTransformer
 from basis import tao_construction
 from vis import plot_matrices, plot_lines, plot_matrix
 
-# with open("/Users/mrmackamoo/Projects/mechanistic-interpretability/understanding_superposition/data/mpnet2_words.json", "r") as f:
-#     dictionary = json.load(f)
+with open("/Users/mrmackamoo/Projects/mechanistic-interpretability/understanding_superposition/data/mpnet2_words.json", "r") as f:
+    dictionary = json.load(f)
 
 basis = tao_construction(0, 50, width=225)
 
 mpnet = SentenceTransformer('sentence-transformers/all-mpnet-base-v2')
 embedding_module = mpnet[0].auto_model.embeddings.word_embeddings
 
-words = ["runner", "run", "player", "play", "walker", "walk"]
+words = ["happy", "joy", "cheer", "sad", "depression", "melancholy"]
 
 with torch.no_grad():
     # may need to batch this if too large
@@ -41,5 +41,7 @@ cosine_sim_matrix = torch.nn.functional.cosine_similarity(
 
 codes_scaled = 2 * (codes - codes.min()) / (codes.max() - codes.min()) - 1
 codes_scaled = codes_scaled.detach().to("cpu")
+
+print(codes_scaled[:, 185:190])
 
 plot_matrices([codes_scaled[:, i: i+15] for i in range(0, codes.shape[1], 15)])

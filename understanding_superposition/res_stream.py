@@ -1,6 +1,6 @@
 import numpy as np
 from basis import tao_construction, projection_matrix, test_complete_combined_error
-from vis import plot_heatmap
+from vis import plot_matrix
 
 dim_in = 50
 n = 225
@@ -11,7 +11,7 @@ def visualize_orthogonality():
     S = sbasis @ sbasis.T - np.eye(sbasis.shape[0])
     e = 0.005
     # G = (np.abs(S) < e) * np.ones(sbasis.shape[0])
-    plot_heatmap([S])
+    plot_matrix(S)
 
 def project(basis_vec: np.ndarray, vec: np.ndarray) -> np.ndarray:
     mat = projection_matrix(basis_vec)
