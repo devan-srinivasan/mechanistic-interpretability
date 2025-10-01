@@ -197,7 +197,7 @@ def tao_construction(n_vecs: int, dim: int = None, width: int = None) -> np.ndar
         p = next_prime(int(np.ceil(np.sqrt(n_vecs))))
     else:
         p = next_prime(int(dim // 2) + dim % 2)
-    print(p)
+    # print(p)
     sbasis = generate_quadratic_phase_matrix(p, width=width)
     return sbasis
 
@@ -301,5 +301,3 @@ Norm Error:
     Max: {norm_error.max().item():.4f}
     Mean: {norm_error.mean().item():.4f}
     """)
-
-

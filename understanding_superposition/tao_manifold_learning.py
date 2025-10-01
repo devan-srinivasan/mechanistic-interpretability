@@ -36,7 +36,8 @@ class Encoder(nn.Module):
             layers.append(nn.ReLU())
             prev_dim = hd
         layers.append(nn.Linear(prev_dim, code_dim))
-        layers.append(nn.Tanh())  # constrain codes to [-1, 1]
+        # layers.append(nn.Tanh())  # constrain codes to [-1, 1]
+        layers.append(nn.ReLU())
         self.net = nn.Sequential(*layers)
 
     def forward(self, x):
@@ -77,26 +78,30 @@ class AutoencoderWithBasis(nn.Module):
 # -------------------------
 # Training
 # -------------------------
+
+SPARSITY_THRESHOLD = 1e-3
     
 def construct_model(
         dim_in: int = 50,
         n: int = 15**2,
         embed_dim: int = 768,
-        encoder_hidden_dims: list[int] = [256, 256],
-        decoder_hidden_dims: list[int] = [256, 256],
+        encoder_hidden_dims: list[int] = [256],
+        decoder_hidden_dims: list[int] = [256],
     ):
     # Hyperparameters
     basis = tao_construction(0, dim_in, width=n)
-    # print(basis.shape)
 
-    # Encoder
-    n_basis_vectors = basis.shape[0]
+    # TODO [temporary]: splice the basis to first n vectors lol
+    # p = int(n**0.5)
+    # basis = basis[:p, :] # every p vectors form a subspace, and we have p of these subspaces
+
+    print(basis.shape)
 
     # Decoder
     basis_dim = basis.shape[1]
 
     # Model
-    encoder = Encoder(input_dim=embed_dim, code_dim=n_basis_vectors, hidden_dims=encoder_hidden_dims)
+    encoder = Encoder(input_dim=embed_dim, code_dim=basis.shape[0], hidden_dims=encoder_hidden_dims)
     decoder = Decoder(stream_dim=basis_dim, output_dim=embed_dim, hidden_dims=decoder_hidden_dims)
     model = AutoencoderWithBasis(encoder, decoder, torch.tensor(basis))
 
@@ -134,11 +139,18 @@ def generate_dataset(words: list[str], output_dir: str, train_split: float = 0.8
     val_dataset = TensorDataset(val_embeddings)
     return train_dataset, val_dataset
 
-def loss_fn(reconstructed, original):
+def loss_fn(reconstructed, original, codes):
     # both are shape (B, d)
     loss = nn.functional.mse_loss(reconstructed, original)
     mean_cosine_sim_loss = 1 - nn.functional.cosine_similarity(reconstructed, original, dim=-1).mean()
-    return loss + mean_cosine_sim_loss
+
+    # sparsity loss
+    if codes is not None:
+        sparsity_loss = (codes.abs() > SPARSITY_THRESHOLD).float().mean()
+    else:
+        sparsity_loss = 0
+
+    return loss + mean_cosine_sim_loss + sparsity_loss
 
 def load_model(checkpoint: str, tmp_dir = "./tmp", download: bool = True) -> AutoencoderWithBasis:
     if download:
@@ -213,11 +225,12 @@ def train(args: argparse.Namespace, model: AutoencoderWithBasis, train_dataloade
             batch_embeddings = batch_embeddings.to(device)
             
             # Forward pass
-            outputs = model(batch_embeddings)
+            codes = model.encoder(batch_embeddings)
+            outputs = model.decoder(codes @ model.B)
             
             # Compute loss
-            loss = loss_fn(outputs, batch_embeddings)
-            
+            loss = loss_fn(outputs, batch_embeddings, codes=codes)
+
             # Backward pass
             optimizer.zero_grad()
             loss.backward()
@@ -275,13 +288,16 @@ def eval(model: AutoencoderWithBasis, val_dataloader: DataLoader, args: argparse
     num_batches = 0
     identity_accuracies = []
     mean_cosine_errors = []
-    top_k_accuracies = []
+
+    # for each feature (column) we will track number of times it's activated
+    activity_tensor = torch.zeros((model.B.shape[0]))
 
     with torch.no_grad():
         for batch_embeddings, in val_dataloader:
             batch_embeddings = batch_embeddings.to(device)
-            outputs = model(batch_embeddings)
-            loss = loss_fn(outputs, batch_embeddings)
+            codes = model.encoder(batch_embeddings)
+            outputs = model.decoder(codes @ model.B)
+            loss = loss_fn(outputs, batch_embeddings, codes=codes)
             total_loss += loss.item()
             num_batches += 1
 
@@ -292,21 +308,6 @@ def eval(model: AutoencoderWithBasis, val_dataloader: DataLoader, args: argparse
                 dim=-1
             )  # (B, B)
 
-            true_cosine_sim = torch.nn.functional.cosine_similarity(
-                batch_embeddings.unsqueeze(1),  # (B, 1, d)
-                batch_embeddings.unsqueeze(0),  # (1, B, d)
-                dim=-1
-            )  # (B, B)
-
-            k = args.k
-            recon_sorted_indices = torch.argsort(cosine_sim, dim=1, descending=True)
-            true_sorted_indices = torch.argsort(true_cosine_sim, dim=1, descending=True)
-            top_k_recon = recon_sorted_indices[:, :k]
-            top_k_true = true_sorted_indices[:, :k]
-
-            # compute how much overlap in topk there is row-wise
-            overlap = (top_k_recon.unsqueeze(2) == top_k_true.unsqueeze(1)).any(dim=2).float().mean(dim=1)
-            top_k_accuracies.append(overlap.mean().item())
 
             # For each output, find which batch_embedding it is closest to (highest cosine sim)
             preds = cosine_sim.argmax(dim=1)  # (B,)
@@ -319,16 +320,25 @@ def eval(model: AutoencoderWithBasis, val_dataloader: DataLoader, args: argparse
             
             identity_accuracies.append(identity_accuracy)
 
+            # compute mean activity of all features
+            activity_mask = (codes.abs() > SPARSITY_THRESHOLD).float().sum(dim=0)
+            activity_tensor += activity_mask.cpu()
+            
     avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
     mean_identity_acc = sum(identity_accuracies) / len(identity_accuracies) if identity_accuracies else 0.0
     mean_cosine_error = sum(mean_cosine_errors) / len(mean_cosine_errors) if mean_cosine_errors else 0.0
-    mean_top_k_acc = sum(top_k_accuracies) / len(top_k_accuracies) if top_k_accuracies else 0.0
+    
+    num_val_samples = len(val_dataloader.dataset)
+    mean_sparsity = (activity_tensor / num_val_samples).mean().item()
+    activity_range = activity_tensor.max().item() - activity_tensor.min().item()
+
 
     return {
         "loss": avg_loss,
         "mean_cosine_match_acc": mean_identity_acc,
         "mean_cosine_error": mean_cosine_error,
-        f"mean_top_{k}_acc": mean_top_k_acc
+        "mean_feature_sparsity": mean_sparsity,
+        "activity_range": activity_range,
     }
 
 def get_hyperparams(args: argparse.Namespace) -> dict:
@@ -385,8 +395,8 @@ def parse_args():
     parser.add_argument("--embed_dim", type=int, default=768, help="Embedding dimension")
     parser.add_argument("--encoder_hidden_dims", type=int, nargs='+', default=[256], help="List of encoder hidden dimensions")
     parser.add_argument("--decoder_hidden_dims", type=int, nargs='+', default=[256], help="List of decoder hidden dimensions")
-    parser.add_argument("--num_epochs", type=int, default=100, help="Number of epochs")
-    parser.add_argument("--learning_rate", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--num_epochs", type=int, default=350, help="Number of epochs")
+    parser.add_argument("--learning_rate", type=float, default=SPARSITY_THRESHOLD, help="Learning rate")
     parser.add_argument("--k", type=int, default=25, help="Top K for accuracy computation")
 
     # logging & validation
@@ -394,7 +404,7 @@ def parse_args():
     parser.add_argument("--val_steps", type=int, default=19, help="Validate every X steps")
     parser.add_argument("--save_steps", type=int, default=10, help="Save model every X steps")
     parser.add_argument("--checkpoint", type=str, 
-                        # default="mrmackamoo/mechanistic-interpretability/model:v2", 
+                        # default="mrmackamoo/mechanistic-interpretability/model:v13", 
                         help="Path to model checkpoint for evaluation")
     
     args = parser.parse_args()
@@ -403,6 +413,19 @@ def parse_args():
 if __name__ == "__main__":
 
     args = parse_args()
+
+    # TODO [temporary]: override some args for quick testing
+    args.dim_in = 760
+    args.n = ( int((60 * 768) ** 0.5) + 1 )**2  # 60 is too high for MPS
+
+    # TODO [temporary]: make encoder and decoder shallow for quick testing
+    args.encoder_hidden_dims = []
+    args.decoder_hidden_dims = []
+    args.num_epochs = 600
+
+    # TODO [temporary]: for loading checkpoint lmao
+    # args.eval = True
+    # args.checkpoint = "mrmackamoo/mechanistic-interpretability/model:v14"
 
     # Initialize wandb run
     if args.wandb_api_key is None:
@@ -417,11 +440,6 @@ if __name__ == "__main__":
 
     args.run_object = run
 
-    # Dummy data: 10 random English words
-    # words = [
-    #     "apple", "banana", "computer", "elephant", "forest", 
-    #     "guitar", "happiness", "island", "journey", "keyboard"
-    # ]
     with open("/Users/mrmackamoo/Projects/mechanistic-interpretability/understanding_superposition/data/mpnet2_words.json", "r") as f:
         words = json.load(f)
 

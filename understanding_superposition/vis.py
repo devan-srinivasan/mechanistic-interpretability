@@ -132,6 +132,8 @@ def plot_clusters(labels: List[str], cluster_heads: List[int]) -> None:
     """
     import plotly.express as px
 
+    assert(len(labels) == len(cluster_heads)), "Labels and cluster_heads must be the same length"
+
     # Find unique clusters
     unique_clusters = sorted(set(cluster_heads))
     n_clusters = len(unique_clusters)
