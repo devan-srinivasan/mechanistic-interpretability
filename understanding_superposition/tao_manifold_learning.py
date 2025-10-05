@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 if torch.mps.is_available():
     ROOT_DIR = "/Users/mrmackamoo/Projects/mechanistic-interpretability"
 else:
-    ROOT_DIR = "~/interp/mechanistic-interpretability" # running on sahitya
+    ROOT_DIR = "/h/120/devan/interp/mechanistic-interpretability" # running on sahitya
 
 load_dotenv(dotenv_path=f"{ROOT_DIR}/.env")
 
