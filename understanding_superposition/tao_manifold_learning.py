@@ -21,7 +21,12 @@ from datetime import datetime
 import wandb
 from dotenv import load_dotenv
 
-load_dotenv(dotenv_path="/Users/mrmackamoo/Projects/mechanistic-interpretability/.env")
+if torch.mps.is_available():
+    ROOT_DIR = "/Users/mrmackamoo/Projects/mechanistic-interpretability"
+else:
+    ROOT_DIR = "~/interp/mechanistic-interpretability" # running on sahitya
+
+load_dotenv(dotenv_path=f"{ROOT_DIR}/.env")
 
 # -------------------------
 # Encoder and Decoder
@@ -376,15 +381,15 @@ def parse_args():
                         action="store_true",
                         help="Evaluate the model")
     parser.add_argument("--save_dir", type=str, 
-                        default="/Users/mrmackamoo/Projects/mechanistic-interpretability/understanding_superposition/runs", 
+                        default=f"{ROOT_DIR}/understanding_superposition/runs", 
                         help="Directory to save models and logs")
     parser.add_argument("--tmp_dir", type=str,
-                        default="/Users/mrmackamoo/Projects/mechanistic-interpretability/understanding_superposition/tmp", 
+                        default=f"{ROOT_DIR}/understanding_superposition/tmp", 
                         help="Temporary directory for downloading artifacts")
     parser.add_argument("--wandb_api_key", type=str, 
                         help="Weights & Biases API key for logging")
     parser.add_argument("--data_file", type=str, 
-                        default="/Users/mrmackamoo/Projects/mechanistic-interpretability/understanding_superposition/data/mpnet2_words.pt", 
+                        default=f"{ROOT_DIR}/understanding_superposition/data/mpnet2_words.pt", 
                         help="Path to save/load embeddings")
 
     # hyperparameters
@@ -440,7 +445,7 @@ if __name__ == "__main__":
 
     args.run_object = run
 
-    with open("/Users/mrmackamoo/Projects/mechanistic-interpretability/understanding_superposition/data/mpnet2_words.json", "r") as f:
+    with open(f"{ROOT_DIR}/understanding_superposition/data/mpnet2_words.json", "r") as f:
         words = json.load(f)
 
     train_dataset, val_dataset = generate_dataset(words, args.data_file, train_split=0.8, val_split=0.1)
