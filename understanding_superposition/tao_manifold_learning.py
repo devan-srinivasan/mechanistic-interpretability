@@ -23,8 +23,10 @@ from dotenv import load_dotenv
 
 if torch.mps.is_available():
     ROOT_DIR = "/Users/mrmackamoo/Projects/mechanistic-interpretability"
+    DEVICE = "mps"  # running on macbook
 else:
     ROOT_DIR = "/h/120/devan/interp/mechanistic-interpretability" # running on sahitya
+    DEVICE = "cuda"
 
 load_dotenv(dotenv_path=f"{ROOT_DIR}/.env")
 
@@ -200,18 +202,9 @@ def train(args: argparse.Namespace, model: AutoencoderWithBasis, train_dataloade
     print(f"Number of trainable parameters in model: {num_params}")
 
     # Device setup
-    if torch.backends.mps.is_available():
-        device = torch.device("mps")
-        print("Using MPS (Apple Silicon GPU)")
-        args.run_object.log({"device": "mps"})
-    elif torch.cuda.is_available():
-        device = torch.device("cuda")
-        print("Using CUDA GPU")
-        args.run_object.log({"device": "cuda"})
-    else:
-        device = torch.device("cpu")
-        print("Using CPU")
-        args.run_object.log({"device": "cpu"})
+    device = torch.device(DEVICE)
+    print(f"Using device: {device}")
+    args.run_object.log({"device": DEVICE})
 
     # Move model to device
     model.to(torch.float32).to(device)
