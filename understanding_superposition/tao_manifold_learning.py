@@ -26,7 +26,7 @@ if torch.mps.is_available():
     DEVICE = "mps"  # running on macbook
 else:
     ROOT_DIR = "/h/120/devan/interp/mechanistic-interpretability" # running on sahitya
-    DEVICE = "cuda"
+    DEVICE = "cuda:4"
 
 load_dotenv(dotenv_path=f"{ROOT_DIR}/.env")
 
@@ -119,8 +119,8 @@ def generate_dataset(words: list[str], output_dir: str, train_split: float = 0.8
     val_file = os.path.join(output_dir, "val.pt")
 
     if os.path.exists(train_file) and os.path.exists(val_file):
-        train_embeddings = torch.load(train_file)
-        val_embeddings = torch.load(val_file)
+        train_embeddings = torch.load(train_file, map_location=DEVICE)
+        val_embeddings = torch.load(val_file, map_location=DEVICE)
     else:
         os.makedirs(output_dir, exist_ok=True)
         mpnet = SentenceTransformer('sentence-transformers/all-mpnet-base-v2')
@@ -422,8 +422,8 @@ if __name__ == "__main__":
     args.num_epochs = 600
 
     # TODO [temporary]: for loading checkpoint lmao
-    # args.eval = True
-    # args.checkpoint = "mrmackamoo/mechanistic-interpretability/model:v14"
+    args.eval = True
+    args.checkpoint = "mrmackamoo/mechanistic-interpretability/model:v15"
 
     # Initialize wandb run
     if args.wandb_api_key is None:
