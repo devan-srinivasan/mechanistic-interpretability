@@ -1,5 +1,5 @@
 import json, torch, os, random, numpy as np
-from tao_manifold_learning import load_model
+from tao_manifold_learning import load_model, load_macros
 from sentence_transformers import SentenceTransformer
 from basis import tao_construction
 from vis import plot_matrices, plot_lines, plot_matrix, plot_clusters
@@ -8,13 +8,12 @@ from nltk.corpus import wordnet
 from tqdm import tqdm
 from sklearn.metrics import mutual_info_score
 
+ROOT_DIR, DEVICE = load_macros()
 
-with open("/Users/mrmackamoo/Projects/mechanistic-interpretability/understanding_superposition/data/mpnet2_words.json", "r") as f:
+with open(f"{ROOT_DIR}/understanding_superposition/data/mpnet2_words.json", "r") as f:
     all_words = json.load(f)
 
-basis = tao_construction(0, 760, width=784)
-
-mpnet = SentenceTransformer('sentence-transformers/all-mpnet-base-v2')
+mpnet = SentenceTransformer('sentence-transformers/all-mpnet-base-v2').to(DEVICE)
 embedding_module = mpnet[0].auto_model.embeddings.word_embeddings
 
 with torch.no_grad():
@@ -24,8 +23,8 @@ with torch.no_grad():
     embeddings = embeddings.to(torch.float32)
 
 model = load_model(
-    checkpoint="mrmackamoo/mechanistic-interpretability/model:v14", 
-    tmp_dir="/Users/mrmackamoo/Projects/mechanistic-interpretability/understanding_superposition/tmp",
+    checkpoint="mrmackamoo/mechanistic-interpretability/model:v15", 
+    tmp_dir=f"{ROOT_DIR}/understanding_superposition/tmp",
     download=False
 )
 
@@ -33,7 +32,7 @@ model.to(embeddings.device)
 
 codes = model.encoder(embeddings)
 
-basis = torch.tensor(basis, device=codes.device, dtype=codes.dtype)[:, :codes.shape[1]]
+basis = model.B
 
 def axes_knn(codes, axes: list[int] = [], k=5):
     from sklearn.neighbors import NearestNeighbors
@@ -101,7 +100,7 @@ def create_pos_data(train_ratio=0.85) -> tuple[torch.Tensor, torch.Tensor, torch
     Creates train & test splits for pos classification based on the POS tags from WordNet.
     returns X_train, y_train, X_test, y_test, filtered_words (words with non-empty POS tags)
     """
-    pos_dict = get_pos_dictionary(all_words, "/Users/mrmackamoo/Projects/mechanistic-interpretability/understanding_superposition/data/mpnet2_word_pos.json")
+    pos_dict = get_pos_dictionary(all_words, f"{ROOT_DIR}/understanding_superposition/data/mpnet2_word_pos.json")
     non_empty_pos = {word: tags for word, tags in pos_dict.items() if tags}
     print(f"{len(non_empty_pos)}/{len(pos_dict)} words have non-empty POS lists ({len(non_empty_pos)/len(pos_dict):.2%})")
 
@@ -168,8 +167,4 @@ def get_nn(word, emb_matrix=embeddings, most=True):
             results.append((all_words[i], f"{sim:.3f}"))
     return results
 
-feature_idx = 0
-highly_active_indices = torch.where(torch.abs(codes[:, feature_idx]) > 1e-2)[0].tolist()
-
-for idx in highly_active_indices:
-    print(all_words[idx])
+print()
