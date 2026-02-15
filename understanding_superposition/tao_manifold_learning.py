@@ -21,12 +21,16 @@ from datetime import datetime
 import wandb
 from dotenv import load_dotenv
 
-if torch.mps.is_available():
-    ROOT_DIR = "/Users/mrmackamoo/Projects/mechanistic-interpretability"
-    DEVICE = "mps"  # running on macbook
-else:
-    ROOT_DIR = "/h/120/devan/interp/mechanistic-interpretability" # running on sahitya
-    DEVICE = "cuda"
+def load_macros():
+    if torch.mps.is_available():
+        dir = "/Users/mrmackamoo/Projects/mechanistic-interpretability"
+        dev = "mps"  # running on macbook
+    else:
+        dir = "/h/120/devan/interp/mechanistic-interpretability" # running on sahitya
+        dev = "cuda:4"
+    return dir, dev
+
+ROOT_DIR, DEVICE = load_macros()
 
 load_dotenv(dotenv_path=f"{ROOT_DIR}/.env")
 
@@ -119,8 +123,8 @@ def generate_dataset(words: list[str], output_dir: str, train_split: float = 0.8
     val_file = os.path.join(output_dir, "val.pt")
 
     if os.path.exists(train_file) and os.path.exists(val_file):
-        train_embeddings = torch.load(train_file)
-        val_embeddings = torch.load(val_file)
+        train_embeddings = torch.load(train_file, map_location=DEVICE)
+        val_embeddings = torch.load(val_file, map_location=DEVICE)
     else:
         os.makedirs(output_dir, exist_ok=True)
         mpnet = SentenceTransformer('sentence-transformers/all-mpnet-base-v2')
@@ -148,16 +152,21 @@ def generate_dataset(words: list[str], output_dir: str, train_split: float = 0.8
 
 def loss_fn(reconstructed, original, codes):
     # both are shape (B, d)
-    loss = nn.functional.mse_loss(reconstructed, original)
+    mse_loss = nn.functional.mse_loss(reconstructed, original)
     mean_cosine_sim_loss = 1 - nn.functional.cosine_similarity(reconstructed, original, dim=-1).mean()
 
     # sparsity loss
     if codes is not None:
-        sparsity_loss = (codes.abs() > SPARSITY_THRESHOLD).float().mean()
+        # which features are on 
+        activity_mask = (codes.abs() > SPARSITY_THRESHOLD).float()
+
+        # activity_loss = activity_mask.mean()  # <-- this just compute sparsity overall, but falls to pitfall that model can just not use lots of features
+        actually_active_mask = activity_mask.sum(dim=0) > 0
+        sparsity_loss = activity_mask[:, actually_active_mask].mean()  # only compute sparsity over features that are actually used
     else:
         sparsity_loss = 0
 
-    return loss + mean_cosine_sim_loss + sparsity_loss
+    return mse_loss + mean_cosine_sim_loss + sparsity_loss
 
 def load_model(checkpoint: str, tmp_dir = "./tmp", download: bool = True) -> AutoencoderWithBasis:
     if download:
@@ -325,10 +334,13 @@ def eval(model: AutoencoderWithBasis, val_dataloader: DataLoader, args: argparse
     avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
     mean_identity_acc = sum(identity_accuracies) / len(identity_accuracies) if identity_accuracies else 0.0
     mean_cosine_error = sum(mean_cosine_errors) / len(mean_cosine_errors) if mean_cosine_errors else 0.0
-    
-    num_val_samples = len(val_dataloader.dataset)
-    mean_sparsity = (activity_tensor / num_val_samples).mean().item()
-    activity_range = activity_tensor.max().item() - activity_tensor.min().item()
+
+    # We want to first see what features (cols) are even being used
+    active_features_mask = activity_tensor > 0
+
+    # Of the active features, what is the mean sparsity (how often do they fire)
+    mean_sparsity = (activity_tensor[active_features_mask] / len(val_dataloader)).mean().item()
+    n_active = active_features_mask.sum().item()
 
 
     return {
@@ -336,7 +348,7 @@ def eval(model: AutoencoderWithBasis, val_dataloader: DataLoader, args: argparse
         "mean_cosine_match_acc": mean_identity_acc,
         "mean_cosine_error": mean_cosine_error,
         "mean_feature_sparsity": mean_sparsity,
-        "activity_range": activity_range,
+        f"n_active (/{args.n})": n_active,
     }
 
 def get_hyperparams(args: argparse.Namespace) -> dict:
@@ -387,7 +399,7 @@ def parse_args():
 
     # hyperparameters
     parser.add_argument("--train_batch_size", type=int, default=1000, help="Training batch size")
-    parser.add_argument("--val_batch_size", type=int, default=500, help="Validation batch size")
+    parser.add_argument("--val_batch_size", type=int, default=1000, help="Validation batch size")
     parser.add_argument("--dim_in", type=int, default=50, help="Input dimension")
     parser.add_argument("--n", type=int, default=15**2, help="Number of basis vectors")
     parser.add_argument("--embed_dim", type=int, default=768, help="Embedding dimension")
@@ -423,7 +435,7 @@ if __name__ == "__main__":
 
     # TODO [temporary]: for loading checkpoint lmao
     # args.eval = True
-    # args.checkpoint = "mrmackamoo/mechanistic-interpretability/model:v14"
+    # args.checkpoint = "mrmackamoo/mechanistic-interpretability/model:v15"
 
     # Initialize wandb run
     if args.wandb_api_key is None:
