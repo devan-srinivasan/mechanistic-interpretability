@@ -1,46 +1,19 @@
-import json, torch
-from understanding_superposition.tao_manifold_learning import load_model
-from sentence_transformers import SentenceTransformer
-from basis import tao_construction
-from vis import plot_matrices, plot_lines, plot_matrix
-from torch.nn.functional import cosine_similarity
+from sae import SAE
+import torch, torch.nn.functional as F
+from tqdm import tqdm
 
-with open("/Users/mrmackamoo/Projects/mechanistic-interpretability/understanding_superposition/data/mpnet2_words.json", "r") as f:
-    dictionary = json.load(f)
+model = SAE(embed_dim=768, hidden_dim=768 * 256)
+model.load_state_dict(torch.load("understanding_superposition/runs/moonlit-heartthrob-128_20260215_133409/model_epoch_20.pth"))
 
-basis = tao_construction(0, 760, width=784)
+val_datafile = "understanding_superposition/data/bert_words.pt/val_0.pt"
+val_tensor = torch.load(val_datafile)
 
-mpnet = SentenceTransformer('sentence-transformers/all-mpnet-base-v2')
-embedding_module = mpnet[0].auto_model.embeddings.word_embeddings
+reconstructed, codes = model(val_tensor)
 
-words = ["play", "run", "swim", "walk", "laugh", "pencil", "apple", "chair", "flower", "computer"]
-
-with torch.no_grad():
-    # may need to batch this if too large
-    tokens = torch.tensor([e[1] for e in mpnet[0].tokenizer(words)['input_ids']])
-    embeddings = embedding_module(tokens.to(mpnet.device))
-    embeddings = embeddings.to(torch.float32)
-
-model = load_model(
-    checkpoint="mrmackamoo/mechanistic-interpretability/model:v13", 
-    tmp_dir="/Users/mrmackamoo/Projects/mechanistic-interpretability/understanding_superposition/tmp",
-    download=False
-)
-
-model.to(embeddings.device)
-
-reconstructed = model(embeddings)
-codes = model.encoder(embeddings)
-
-basis = torch.tensor(basis, device=codes.device, dtype=codes.dtype)[:, :codes.shape[1]]
-
-cosine_sim_matrix = torch.nn.functional.cosine_similarity(
-    codes.unsqueeze(1), codes.unsqueeze(0), dim=-1
-)
-
-codes_scaled = 2 * (codes - codes.min()) / (codes.max() - codes.min()) - 1
-codes_scaled = codes_scaled.detach().to("cpu")
-
-step_size = 10
-matrices = [codes_scaled[:, i:i+step_size] for i in range(0, codes.shape[1], step_size)]
-plot_matrices(matrices)
+correct = 0
+for i, tensor in tqdm(enumerate(val_tensor)):
+    similarities = F.cosine_similarity(reconstructed, tensor.unsqueeze(0), dim=1)
+    best_match_idx = torch.argmax(similarities).item()
+    if best_match_idx == i:
+        correct += 1
+print(f"{correct}/{len(val_tensor)} correct")

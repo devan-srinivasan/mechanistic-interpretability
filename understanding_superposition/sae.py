@@ -1,15 +1,3 @@
-"""
-Define the model here
-
-x = some word
-e = embed(x)
---- model starts here ---
-z = encoder(e)  <- experiment with different architectures
-s = Bz          <- B is a semi-basis of relevant dimension
-d = decoder(s)  <- experiment with different architectures, should probably be symmetric with encoder
---- model ends here ---
-loss = MSE(e, d)
-"""
 import torch, os
 import torch.nn as nn
 import torch.optim as optim
@@ -24,7 +12,7 @@ from tqdm import tqdm
 
 if torch.mps.is_available():
     ROOT_DIR = "/Users/mrmackamoo/Projects/mechanistic-interpretability"
-    DEVICE = "mps"  # running on macbook
+    DEVICE = "mps"
 else:
     ROOT_DIR = "/h/120/devan/interp/mechanistic-interpretability" # running on sahitya
     DEVICE = "cuda"
@@ -38,34 +26,48 @@ class SAE(nn.Module):
     def __init__(self, 
         embed_dim: int,
         hidden_dim: int,
-        lambda_: float,
-        target_sparsity: float
     ):
         super(SAE, self).__init__()
         self.embed_dim = embed_dim
         self.hidden_dim = hidden_dim
-        self.lambda_ = lambda_
-        self.target_sparsity = target_sparsity
 
         # Learnable pre-bias
-        self.pre_bias = nn.Parameter(torch.zeros(1, embed_dim))
+        # self.pre_bias = nn.Parameter(torch.zeros(1, embed_dim))
 
         # Encoder and Decoder combined
         self.encoder = nn.Linear(embed_dim, hidden_dim, bias=True)
         self.decoder = nn.Linear(hidden_dim, embed_dim, bias=True)
+
+        # Initialize bias vectors to 0
+        nn.init.zeros_(self.encoder.bias)
+        nn.init.zeros_(self.decoder.bias)
+
         self.relu = nn.ReLU()
 
         # Kaiming uniform initialization for weights
-        nn.init.kaiming_uniform_(self.encoder.weight, mode='fan_out', nonlinearity='relu')
-        nn.init.kaiming_uniform_(self.decoder.weight, mode='fan_in', nonlinearity='linear')
+        # nn.init.kaiming_uniform_(self.encoder.weight, mode='fan_out', nonlinearity='relu')
+        # nn.init.kaiming_uniform_(self.decoder.weight, mode='fan_in', nonlinearity='linear')
+        
+        # Initialize decoder weights to random directions with l2 norm of 0.1
+        with torch.no_grad():
+            random_directions = torch.randn_like(self.decoder.weight)
+            normalized_directions = random_directions / (random_directions.norm(dim=0, keepdim=True) + 1e-8)
+            self.decoder.weight.copy_(normalized_directions * 0.1)
 
-        def forward(self, x):
-            # Subtract pre-bias
-            x = x - self.pre_bias
-            # Pass through encoder, activation, and decoder
-            codes = self.relu(self.encoder(x))
-            reconstructed = self.decoder(codes)
-            return reconstructed, codes
+            # Initialize encoder weights to the transpose of decoder weights
+            self.encoder.weight.copy_(self.decoder.weight.T)
+
+        # Normalize decoder to unit columns
+        # with torch.no_grad():
+        #     self.decoder.weight.div_(self.decoder.weight.norm(dim=0, keepdim=True) + 1e-8)
+
+    def forward(self, x):
+        # Subtract pre-bias
+        x = x # + self.pre_bias
+        # Pass through encoder, activation, and decoder
+        codes = self.relu(self.encoder(x))
+        reconstructed = self.decoder(codes)
+        return reconstructed, codes
 
 # -------------------------
 # Training
@@ -76,20 +78,21 @@ def construct_model(embed_dim, hidden_dim,) -> SAE:
         hidden_dim=hidden_dim
     )
 
-    def project_decoder_grad(grad):
-        W = model.decoder.weight.detach()
-        W_norm = W / (W.norm(dim=1, keepdim=True) + 1e-8)
-        parallel = (grad * W_norm).sum(dim=1, keepdim=True) * W_norm
-        return grad - parallel
+    # def project_decoder_grad(grad):
+    #     W = model.decoder.weight.detach()
+    #     W_norm = W / (W.norm(dim=0, keepdim=True) + 1e-8)
+    #     parallel = (grad * W_norm).sum(dim=0, keepdim=True) * W_norm
+    #     return grad - parallel
 
-    model.decoder.weight.register_hook(project_decoder_grad)
+    # model.decoder.weight.register_hook(project_decoder_grad)
 
     return model
 
 def generate_dataset(
-        words: list[str], output_dir: str, layer: int, 
-        train_split: float = 0.8, val_split: float = 0.1,
-        batch_size: int = 500,):
+    words: list[str], output_dir: str, layer: int, 
+    train_split: float = 0.8, val_split: float = 0.1,
+    batch_size: int = 10,
+):
     
     train_file = os.path.join(output_dir, f"train_{layer}.pt")
     val_file = os.path.join(output_dir, f"val_{layer}.pt")
@@ -108,7 +111,7 @@ def generate_dataset(
         for i in tqdm(range(0, len(words), batch_size), desc="Generating embeddings"):
             batch_words = words[i:i + batch_size]
             
-            # Tokenize the batch of words and ensure they are at position 0
+            # Tokenize the batch of words and ensure they are at position 1
             inputs = tokenizer(batch_words, return_tensors="pt", padding=True, truncation=True)
             inputs = {key: val.to(DEVICE) for key, val in inputs.items()}
 
@@ -117,11 +120,10 @@ def generate_dataset(
                 outputs = bert(**inputs)
                 hidden_states = outputs.hidden_states[layer]
 
-            # Extract embeddings for the words at position 0
-            batch_embeddings = hidden_states[:, 0, :]  # Shape: (batch_size, 768)
+            # Extract embeddings for the words at position 1
+            batch_embeddings = hidden_states[:, 1, :]  # Shape: (batch_size, 768)
 
             # Stack embeddings for the batch and add to the overall list
-            batch_embeddings = torch.stack(batch_embeddings)  # Shape: (batch_size, 768)
             embeddings.append(batch_embeddings)
 
         # Concatenate all embeddings and split into train/val sets
@@ -151,24 +153,29 @@ def generate_dataset(
     val_dataset = TensorDataset(val_embeddings)
     return train_dataset, val_dataset
 
-def loss_fn(reconstructed, original, codes, lambda_=10):
+def loss_fn(reconstructed, original, codes, lambda_, decoder_weight):
     # both are shape (B, d)
     mse_loss = nn.MSELoss()(reconstructed, original)
-    l1_loss = lambda_ * torch.mean(torch.abs(codes))
-    return mse_loss + l1_loss
+    # l1_loss = lambda_ * torch.mean(torch.abs(codes))
+    lambda_loss = lambda_ * torch.sum(torch.abs(codes).sum(dim=0) * decoder_weight.norm(dim=0))
+    return mse_loss + lambda_loss
 
-def load_model(checkpoint: str, tmp_dir = "./tmp", download: bool = True) -> SAE:
+def load_model(
+    dir: str = None,
+    checkpoint: str = None,
+    download: bool = False,
+    tmp_dir: str = "./tmp"
+) -> SAE:
     if download:
+        assert checkpoint, "Checkpoint must be provided when downloading from wandb"
         # Download artifact from wandb and extract to tmp_dir
         artifact = wandb.use_artifact(checkpoint, type="model")
         artifact_dir = artifact.download(root=tmp_dir)
         with open(os.path.join(tmp_dir, "model_name.txt"), "w") as f:
             f.write(checkpoint)
     else:
-        artifact_dir = tmp_dir
-        with open(os.path.join(tmp_dir, "model_name.txt"), "r") as f:
-            saved_model_name = f.read().strip()
-        assert saved_model_name == checkpoint, f"Model name in txt ({saved_model_name}) does not match checkpoint ({checkpoint}), should override download"
+        # Load from local directory
+        artifact_dir = dir
     
     weights_path = os.path.join(artifact_dir, "model.pth")
     hyp_path = os.path.join(artifact_dir, "hyperparams.json")
@@ -183,13 +190,16 @@ def load_model(checkpoint: str, tmp_dir = "./tmp", download: bool = True) -> SAE
     )
 
     model.load_state_dict(torch.load(weights_path, map_location="cpu"))
-    print(f"Successfully loaded model: {checkpoint}")
+    if checkpoint:
+        print(f"Successfully loaded model: {checkpoint}")
+    else:
+        print(f"Successfully loaded model from {dir}")
     return model
 
 def train(args: argparse.Namespace, model: SAE, train_dataloader: DataLoader, val_dataloader: DataLoader = None):
     # Create run directory with timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = f"{args.save_dir}/{timestamp}"
+    output_dir = f"{args.save_dir}/{args.run_object.name}_{timestamp}"
     os.makedirs(output_dir, exist_ok=True)
 
     # Print number of trainable parameters
@@ -213,16 +223,15 @@ def train(args: argparse.Namespace, model: SAE, train_dataloader: DataLoader, va
     for epoch in range(num_epochs):
         epoch_loss = 0
         num_batches = 0
-        
+
         for batch_idx, (batch_embeddings,) in enumerate(train_dataloader):
             batch_embeddings = batch_embeddings.to(device)
             
             # Forward pass
-            codes = model.encoder(batch_embeddings)
-            outputs = model.decoder(codes @ model.B)
+            outputs, codes = model(batch_embeddings)
             
             # Compute loss
-            loss = loss_fn(outputs, batch_embeddings, codes=codes, target_sparsity=args.target_sparsity)
+            loss = loss_fn(outputs, batch_embeddings, codes=codes, lambda_=args.lambda_, decoder_weight=model.decoder.weight)
 
             # Backward pass
             optimizer.zero_grad()
@@ -231,7 +240,7 @@ def train(args: argparse.Namespace, model: SAE, train_dataloader: DataLoader, va
             
             epoch_loss += loss.item()
             num_batches += 1
-            global_step += 1
+            global_step += batch_embeddings.size(0)
             
             # Log loss to wandb every step
             args.run_object.log({"train/loss": loss.item(), "global_step": global_step})
@@ -239,7 +248,7 @@ def train(args: argparse.Namespace, model: SAE, train_dataloader: DataLoader, va
             # Print and log every args.logging_steps
             if (batch_idx + 1) % args.logging_steps == 0 or (batch_idx + 1) == len(train_dataloader):
                 avg_loss = epoch_loss / num_batches
-                print(f"Epoch {epoch+1}/{num_epochs}, Batch {batch_idx+1}/{len(train_dataloader)}, Avg. Loss: {avg_loss:.6f}")
+                print(f"\tBatch {batch_idx+1}/{len(train_dataloader)}, Loss: {loss:.6f}")
                 args.run_object.log({
                     "train/avg_loss": avg_loss,
                     "epoch": epoch + 1,
@@ -248,17 +257,25 @@ def train(args: argparse.Namespace, model: SAE, train_dataloader: DataLoader, va
                 })
 
             # Run eval and log every args.val_steps
-            if val_dataloader is not None and ((batch_idx + 1) % args.val_steps == 0 or (batch_idx + 1) == len(train_dataloader)):
-                eval_result = eval(model, val_dataloader, args)
-                print(f"Eval Loss at Epoch {epoch+1}, Batch {batch_idx+1}: {eval_result['loss']:.6f}")
-                log_dict = {
-                    "epoch": epoch + 1,
-                    "batch": batch_idx + 1,
-                    "global_step": global_step
-                }
-                for k, v in eval_result.items():
-                    log_dict[f"val/{k}"] = v
-                args.run_object.log(log_dict)
+            if val_dataloader:
+                if args.val_steps.isdigit() or args.val_steps == 'epoch':
+                    do_eval = False
+                    if args.val_steps.isdigit():
+                        args.val_steps = int(args.val_steps)
+                        if (batch_idx + 1) % args.val_steps == 0: do_eval = True
+                    elif (batch_idx + 1) == len(train_dataloader): do_eval = True
+
+                    if do_eval:
+                        eval_result = eval(model, val_dataloader, args)
+                        print(f"Eval Loss at Epoch {epoch+1}, Batch {batch_idx+1}: {eval_result['loss']:.6f}")
+                        log_dict = {
+                            "epoch": epoch + 1,
+                            "batch": batch_idx + 1,
+                            "global_step": global_step
+                        }
+                        for k, v in eval_result.items():
+                            log_dict[f"val/{k}"] = v
+                        args.run_object.log(log_dict)
         
         avg_loss = epoch_loss / num_batches
         print(f"Epoch {epoch+1}/{num_epochs}, Avg. Loss: {avg_loss:.6f} Epoch Loss: {epoch_loss:.6f}")
@@ -269,10 +286,9 @@ def train(args: argparse.Namespace, model: SAE, train_dataloader: DataLoader, va
             "global_step": global_step
         })
     
-    # Save model and log artifact
-    torch.save(model.state_dict(), f"{output_dir}/model.pth")
-    print(f"Model saved to {output_dir}/model.pth")
-    save_model(args, model, output_dir)
+        # Save model and log artifact
+        fp = f"{output_dir}/model_epoch_{epoch+1}.pth"
+        save_model(args, model, fp, push_to_wandb=False)
 
 def eval(model: SAE, val_dataloader: DataLoader, args: argparse.Namespace, log_to_wandb: bool = False) -> dict:
     model.eval()
@@ -281,32 +297,33 @@ def eval(model: SAE, val_dataloader: DataLoader, args: argparse.Namespace, log_t
     num_batches = 0
 
     # for each feature (column) we will track number of times it's activated
-    activity_tensor = torch.zeros((model.B.shape[0]))
+    activity_tensor = torch.zeros(model.hidden_dim)
+
+    all_codes = []
 
     with torch.no_grad():
         for batch_embeddings, in val_dataloader:
             batch_embeddings = batch_embeddings.to(device)
-            codes = model.encoder(batch_embeddings)
-            outputs = model.decoder(codes @ model.B)
-            loss = loss_fn(outputs, batch_embeddings, codes=codes, target_sparsity=args.target_sparsity)
+            outputs, codes = model(batch_embeddings)
+            all_codes.append(codes.detach().cpu())
+
+            loss = loss_fn(outputs, batch_embeddings, codes=codes, lambda_=args.lambda_, decoder_weight=model.decoder.weight)
             total_loss += loss.item()
             num_batches += 1
 
             # compute mean activity of all features
-            activity_mask = (codes.abs() > args.target_sparsity).float().sum(dim=0)
+            activity_mask = (codes.abs() > 0.0001).float().sum(dim=0)
             activity_tensor += activity_mask.cpu()
             
     avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
+    all_codes = torch.cat(all_codes, dim=0)
     
     num_val_samples = len(val_dataloader.dataset)
-    mean_sparsity = (activity_tensor / num_val_samples).mean().item()
-    activity_range = activity_tensor.max().item() - activity_tensor.min().item()
-
 
     return {
         "loss": avg_loss,
-        "mean_feature_sparsity": mean_sparsity,
-        "activity_range": activity_range,
+        "feat_n_active": (activity_tensor > 0).sum().item(),
+        "feat_avg_activation": (activity_tensor / num_val_samples)[activity_tensor > 0].mean().item(),  # compute average activation over active features. not dead ones
     }
 
 def get_hyperparams(args: argparse.Namespace) -> dict:
@@ -317,12 +334,12 @@ def get_hyperparams(args: argparse.Namespace) -> dict:
         "hidden_dim": args.hidden_dim,
         "learning_rate": args.learning_rate,
         "lambda": args.lambda_,
-        "target_sparsity": args.target_sparsity,
+        # "target_sparsity": args.target_sparsity,
         "num_epochs": args.num_epochs,
     }
     return hyperparams
 
-def save_model(args, model: ..., dir: str):
+def save_model(args, model: SAE, dir: str, push_to_wandb: bool = True):
     # save the model as as well as all hyperparams (as json) to recreate it
     os.makedirs(dir, exist_ok=True)
     torch.save(model.state_dict(), f"{dir}/model.pth")
@@ -331,10 +348,11 @@ def save_model(args, model: ..., dir: str):
         json.dump(hyperparams, f, indent=4)
     print(f"Model saved to {dir}/model.pth")
 
-    # push this whole directory to wandb as an artifact for the run (args.run_object)
-    artifact = wandb.Artifact(name="model", type="model")
-    artifact.add_dir(dir)
-    args.run_object.log_artifact(artifact)
+    if push_to_wandb:
+        # push this whole directory to wandb as an artifact for the run (args.run_object)
+        artifact = wandb.Artifact(name="model", type="model")
+        artifact.add_dir(dir)
+        args.run_object.log_artifact(artifact)
 
 # parse command line arguments
 def parse_args():
@@ -352,7 +370,7 @@ def parse_args():
     parser.add_argument("--wandb_api_key", type=str, 
                         help="Weights & Biases API key for logging")
     parser.add_argument("--data_file", type=str, 
-                        default=f"{ROOT_DIR}/understanding_superposition/data/mpnet2_words.pt", 
+                        default=f"{ROOT_DIR}/understanding_superposition/data/bert_words.pt", 
                         help="Path to save/load embeddings")
 
     # hyperparameters
@@ -360,15 +378,14 @@ def parse_args():
     parser.add_argument("--val_batch_size", type=int, default=500, help="Validation batch size")
     parser.add_argument("--embed_dim", type=int, default=768, help="Embedding dimension")
     parser.add_argument("--hidden_dim", type=int, default=768*256, help="Hidden dimension in encoder/decoder")
-    parser.add_argument("--lambda_", type=float, default=1e-3, help="Sparsity penalty coefficient")
+    parser.add_argument("--lambda_", type=float, default=5, help="Sparsity penalty coefficient")
     parser.add_argument("--num_epochs", type=int, default=350, help="Number of epochs")
-    parser.add_argument("--learning_rate", type=float, default=0.01, help="Learning rate")
-    parser.add_argument("--target_sparsity", type=float, default=1e-3, help="Desired Sparsity Level in Activations")
+    parser.add_argument("--learning_rate", type=float, default=5e-5, help="Learning rate")
+    # parser.add_argument("--target_sparsity", type=float, default=1e-3, help="Desired Sparsity Level in Activations")
 
     # logging & validation
-    parser.add_argument("--logging_steps", type=int, default=19, help="Log every X steps")
-    parser.add_argument("--val_steps", type=int, default=19, help="Validate every X steps")
-    parser.add_argument("--save_steps", type=int, default=10, help="Save model every X steps")
+    parser.add_argument("--logging_steps", type=int, default=1, help="Log every X steps")
+    parser.add_argument("--val_steps", type=str, default='epoch', help="Validate every X steps")
     parser.add_argument("--checkpoint", type=str, 
                         # default="mrmackamoo/mechanistic-interpretability/model:v13", 
                         help="Path to model checkpoint for evaluation")
@@ -379,6 +396,10 @@ def parse_args():
 if __name__ == "__main__":
 
     args = parse_args()
+
+    # override
+    # args.eval = True
+    # args.checkpoint = "runs/moonlit-heartthrob-128_20260215_133409/model_epoch_8.pth"
 
     # Initialize wandb run
     if args.wandb_api_key is None:
@@ -396,7 +417,8 @@ if __name__ == "__main__":
     with open(f"{ROOT_DIR}/understanding_superposition/data/bert_words.json", "r") as f:
         words = json.load(f)
 
-    train_dataset, val_dataset = generate_dataset(words, args.data_file, train_split=0.8, val_split=0.1)
+    train_dataset, val_dataset = generate_dataset(words, args.data_file, layer=0, train_split=0.8, val_split=0.1)
+    
     train_dataloader = DataLoader(train_dataset, batch_size=args.train_batch_size, shuffle=True)
     val_dataloader = DataLoader(val_dataset, batch_size=args.val_batch_size, shuffle=False)
 
