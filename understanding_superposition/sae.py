@@ -1,6 +1,4 @@
-import torch, os
-import torch.nn as nn
-import torch.optim as optim
+import torch, os, torch.nn as nn, torch.optim as optim, torch.nn.functional as F
 import argparse, json
 from torch.utils.data import DataLoader, TensorDataset
 from basis import tao_construction
@@ -310,11 +308,16 @@ def eval(model: SAE, val_dataloader: DataLoader, args: argparse.Namespace, log_t
 
     all_codes = []
 
+    cos_sim = []
+
     with torch.no_grad():
         for batch_embeddings, in val_dataloader:
             batch_embeddings = batch_embeddings.to(device)
             outputs, codes = model(batch_embeddings)
             all_codes.append(codes.detach().cpu())
+
+            cos_ = F.cosine_similarity(outputs, batch_embeddings)
+            cos_sim.extend(cos_.cpu().tolist())
 
             loss = args.loss_fn(outputs, batch_embeddings, codes=codes, lambda_=args.lambda_, decoder_weight=model.decoder.weight)
             total_loss += loss.item()
@@ -331,6 +334,7 @@ def eval(model: SAE, val_dataloader: DataLoader, args: argparse.Namespace, log_t
 
     return {
         "loss": avg_loss,
+        "mean_cos_sim": sum(cos_sim) / len(cos_sim),
         "feat_n_active": (activity_tensor > 0).sum().item(),
         "feat_avg_activation": (activity_tensor / num_val_samples)[activity_tensor > 0].mean().item(),  # compute average activation over active features. not dead ones
     }

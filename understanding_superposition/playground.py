@@ -30,13 +30,17 @@ codes_active = (codes > 0.005).float()
 
 activity = codes_active.sum(dim=0)
 
-c = 0
-for i, v in tqdm(enumerate(val_tensor), leave=False):
-    cos_sim = F.cosine_similarity(reconstructed, val_tensor[i].unsqueeze(0))
-    if cos_sim.argmax() == i:
-        c += 1
+# c = 0
+# for i, v in tqdm(enumerate(val_tensor), leave=False):
+#     cos_sim = F.cosine_similarity(reconstructed, val_tensor[i].unsqueeze(0))
+#     if cos_sim.argmax() == i:
+#         c += 1
 
-print(f"cos acc %: {c / len(val_tensor) * 100:.2f}%")
+# print(f"cos acc %: {c / len(val_tensor) * 100:.2f}%")
+
+cosine_sims = F.cosine_similarity(reconstructed, val_tensor)
+print(f"cos_error: {(1 - cosine_sims).mean().item():.4f}")
+
 print(f"n_active: {(activity > 0).sum().item()}")
 print(f"mse: {F.mse_loss(reconstructed, val_tensor).item()}")
 
