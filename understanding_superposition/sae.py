@@ -357,6 +357,7 @@ def save_model(args, model: SAE, dir: str, push_to_wandb: bool = True):
 # parse command line arguments
 def parse_args():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--device", type=str, help="Device to use for training and evaluation (e.g., 'cuda:0', 'mps')")
     parser.add_argument("--eval", 
                         # action="store_false", 
                         action="store_true",
@@ -400,6 +401,9 @@ if __name__ == "__main__":
     # override
     # args.eval = True
     # args.checkpoint = "runs/moonlit-heartthrob-128_20260215_133409/model_epoch_8.pth"
+
+    if args.device:
+        DEVICE = args.device
 
     # Initialize wandb run
     if args.wandb_api_key is None:
