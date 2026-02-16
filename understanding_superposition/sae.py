@@ -307,7 +307,7 @@ def eval(model: SAE, val_dataloader: DataLoader, args: argparse.Namespace, log_t
     activity_tensor = torch.zeros(model.hidden_dim)
 
     all_codes = []
-
+    mse = []
     cos_sim = []
 
     with torch.no_grad():
@@ -318,6 +318,8 @@ def eval(model: SAE, val_dataloader: DataLoader, args: argparse.Namespace, log_t
 
             cos_ = F.cosine_similarity(outputs, batch_embeddings)
             cos_sim.extend(cos_.cpu().tolist())
+
+            mse.extend(F.mse_loss(outputs, batch_embeddings, reduction="none").cpu().tolist())
 
             loss = args.loss_fn(outputs, batch_embeddings, codes=codes, lambda_=args.lambda_, decoder_weight=model.decoder.weight)
             total_loss += loss.item()
@@ -335,6 +337,7 @@ def eval(model: SAE, val_dataloader: DataLoader, args: argparse.Namespace, log_t
     return {
         "loss": avg_loss,
         "mean_cos_sim": sum(cos_sim) / len(cos_sim),
+        "mse": sum(mse) / len(mse),
         "feat_n_active": (activity_tensor > 0).sum().item(),
         "feat_avg_activation": (activity_tensor / num_val_samples)[activity_tensor > 0].mean().item(),  # compute average activation over active features. not dead ones
     }
