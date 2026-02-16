@@ -5,7 +5,7 @@ import json
 import matplotlib.pyplot as plt
 
 model = SAE(embed_dim=768, hidden_dim=768 * 256)
-model.load_state_dict(torch.load("understanding_superposition/tmp/model_epoch_5.pth/model.pth", map_location="cpu"))
+model.load_state_dict(torch.load("understanding_superposition/tmp/model_epoch_107.pth/model.pth", map_location="cpu"))
 
 val_datafile = "understanding_superposition/data/bert_words/val_0.pt"
 val_tensor = torch.load(val_datafile)

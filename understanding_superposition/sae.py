@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 if torch.mps.is_available():
     ROOT_DIR = "/Users/mrmackamoo/Projects/mechanistic-interpretability"
-    DEVICE = "mps"
+    DEVICE = "cpu"
 else:
     ROOT_DIR = "/h/120/devan/interp/mechanistic-interpretability" # running on sahitya
     DEVICE = "cuda:4"
@@ -90,7 +90,7 @@ def construct_model(embed_dim, hidden_dim,) -> SAE:
 
 def generate_dataset(
     words: list[str], output_dir: str, layer: int, 
-    train_split: float = 0.8, val_split: float = 0.1,
+    train_split: float = 0.85, val_split: float = 0.15,
     batch_size: int = 10,
 ):
     
@@ -133,10 +133,9 @@ def generate_dataset(
         num_samples = embeddings.size(0)
         indices = torch.randperm(num_samples)
         train_size = int(train_split * num_samples)
-        val_size = int(val_split * num_samples)
 
         train_indices = indices[:train_size]
-        val_indices = indices[train_size:train_size + val_size]
+        val_indices = indices[train_size:]
 
         train_embeddings = embeddings[train_indices]
         val_embeddings = embeddings[val_indices]
@@ -292,8 +291,9 @@ def train(args: argparse.Namespace, model: SAE, train_dataloader: DataLoader, va
         })
     
         # Save model and log artifact
-        fp = f"{output_dir}/model_epoch_{epoch+1}.pth"
-        save_model(args, model, fp, push_to_wandb=False)
+        if (epoch + 1) % 10 == 0 or (epoch + 1) == num_epochs:
+            fp = f"{output_dir}/model_epoch_{epoch+1}.pth"
+            save_model(args, model, fp, push_to_wandb=False)
 
 def eval(model: SAE, val_dataloader: DataLoader, args: argparse.Namespace, log_to_wandb: bool = False) -> dict:
     model.eval()
