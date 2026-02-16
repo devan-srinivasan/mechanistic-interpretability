@@ -155,10 +155,15 @@ def generate_dataset(
 
 def loss_fn(reconstructed, original, codes, lambda_, decoder_weight):
     # both are shape (B, d)
-    mse_loss = nn.MSELoss()(reconstructed, original)
+    # mse_loss = nn.MSELoss()(reconstructed, original)
     # l1_loss = lambda_ * torch.mean(torch.abs(codes))
+
+    cosine_sim = nn.functional.cosine_similarity(reconstructed, original, dim=1)
+    cosine_loss = 1 - cosine_sim.mean()  # Minimize 1 - mean cosine similarity
+
     lambda_loss = lambda_ * torch.sum(torch.abs(codes).sum(dim=0) * decoder_weight.norm(dim=0))
-    return mse_loss + lambda_loss
+    # return mse_loss + lambda_loss
+    return cosine_loss + lambda_loss
 
 def load_model(
     dir: str = None,
