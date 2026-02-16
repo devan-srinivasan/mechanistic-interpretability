@@ -152,17 +152,21 @@ def generate_dataset(
     val_dataset = TensorDataset(val_embeddings)
     return train_dataset, val_dataset
 
-def loss_fn(reconstructed, original, codes, lambda_, decoder_weight):
-    # both are shape (B, d)
-    # mse_loss = nn.MSELoss()(reconstructed, original)
-    # l1_loss = lambda_ * torch.mean(torch.abs(codes))
+def mse_loss_fn(reconstructed, original, codes, lambda_, decoder_weight):
+    mse_loss = nn.MSELoss()(reconstructed, original)
+    lambda_loss = lambda_ * torch.sum(torch.abs(codes).sum(dim=0) * decoder_weight.norm(dim=0))
+    return mse_loss + lambda_loss
 
+def directional_loss_fn(reconstructed, original, codes, lambda_, decoder_weight):
     cosine_sim = nn.functional.cosine_similarity(reconstructed, original, dim=1)
     cosine_loss = 1 - cosine_sim.mean()  # Minimize 1 - mean cosine similarity
-
     lambda_loss = lambda_ * torch.sum(torch.abs(codes).sum(dim=0) * decoder_weight.norm(dim=0))
-    # return mse_loss + lambda_loss
     return cosine_loss + lambda_loss
+
+LOSS_FNS = {
+    'mse': mse_loss_fn,
+    'cos': directional_loss_fn
+}
 
 def load_model(
     dir: str = None,
@@ -235,7 +239,7 @@ def train(args: argparse.Namespace, model: SAE, train_dataloader: DataLoader, va
             outputs, codes = model(batch_embeddings)
             
             # Compute loss
-            loss = loss_fn(outputs, batch_embeddings, codes=codes, lambda_=args.lambda_, decoder_weight=model.decoder.weight)
+            loss = args.loss_fn(outputs, batch_embeddings, codes=codes, lambda_=args.lambda_, decoder_weight=model.decoder.weight)
 
             # Backward pass
             optimizer.zero_grad()
@@ -312,7 +316,7 @@ def eval(model: SAE, val_dataloader: DataLoader, args: argparse.Namespace, log_t
             outputs, codes = model(batch_embeddings)
             all_codes.append(codes.detach().cpu())
 
-            loss = loss_fn(outputs, batch_embeddings, codes=codes, lambda_=args.lambda_, decoder_weight=model.decoder.weight)
+            loss = args.loss_fn(outputs, batch_embeddings, codes=codes, lambda_=args.lambda_, decoder_weight=model.decoder.weight)
             total_loss += loss.item()
             num_batches += 1
 
@@ -339,8 +343,9 @@ def get_hyperparams(args: argparse.Namespace) -> dict:
         "hidden_dim": args.hidden_dim,
         "learning_rate": args.learning_rate,
         "lambda": args.lambda_,
-        # "target_sparsity": args.target_sparsity,
         "num_epochs": args.num_epochs,
+        "loss_fn": args.loss_fn.__name__,
+
     }
     return hyperparams
 
@@ -380,6 +385,7 @@ def parse_args():
                         help="Path to save/load embeddings")
 
     # hyperparameters
+    parser.add_argument("--loss_fn", type=str, default='mse', choices=LOSS_FNS.keys(), help=str(list(LOSS_FNS.keys())))
     parser.add_argument("--train_batch_size", type=int, default=1000, help="Training batch size")
     parser.add_argument("--val_batch_size", type=int, default=500, help="Validation batch size")
     parser.add_argument("--embed_dim", type=int, default=768, help="Embedding dimension")
@@ -387,7 +393,6 @@ def parse_args():
     parser.add_argument("--lambda_", type=float, default=5, help="Sparsity penalty coefficient")
     parser.add_argument("--num_epochs", type=int, default=350, help="Number of epochs")
     parser.add_argument("--learning_rate", type=float, default=5e-5, help="Learning rate")
-    # parser.add_argument("--target_sparsity", type=float, default=1e-3, help="Desired Sparsity Level in Activations")
 
     # logging & validation
     parser.add_argument("--logging_steps", type=int, default=1, help="Log every X steps")
@@ -402,6 +407,8 @@ def parse_args():
 if __name__ == "__main__":
 
     args = parse_args()
+
+    args.loss_fn = LOSS_FNS[args.loss_fn]
 
     # override
     # args.eval = True
