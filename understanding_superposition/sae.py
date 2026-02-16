@@ -370,7 +370,7 @@ def parse_args():
     parser.add_argument("--wandb_api_key", type=str, 
                         help="Weights & Biases API key for logging")
     parser.add_argument("--data_file", type=str, 
-                        default=f"{ROOT_DIR}/understanding_superposition/data/bert_words.pt", 
+                        default=f"{ROOT_DIR}/understanding_superposition/data/bert_words", 
                         help="Path to save/load embeddings")
 
     # hyperparameters
