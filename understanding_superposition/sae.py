@@ -15,7 +15,7 @@ if torch.mps.is_available():
     DEVICE = "mps"
 else:
     ROOT_DIR = "/h/120/devan/interp/mechanistic-interpretability" # running on sahitya
-    DEVICE = "cuda"
+    DEVICE = "cuda:4"
 
 load_dotenv(dotenv_path=f"{ROOT_DIR}/.env")
 
@@ -189,7 +189,7 @@ def load_model(
         hidden_dim=hyperparams["hidden_dim"],
     )
 
-    model.load_state_dict(torch.load(weights_path, map_location="cpu"))
+    model.load_state_dict(torch.load(weights_path, map_location=DEVICE))
     if checkpoint:
         print(f"Successfully loaded model: {checkpoint}")
     else:
