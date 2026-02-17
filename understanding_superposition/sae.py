@@ -293,7 +293,7 @@ def train(args: argparse.Namespace, model: SAE, train_dataloader: DataLoader, va
         })
     
         # Save model and log artifact
-        if (epoch + 1) % 10 == 0 or (epoch + 1) == num_epochs:
+        if (epoch + 1) % args.save_epochs == 0 or (epoch + 1) == num_epochs:
             fp = f"{output_dir}/model_epoch_{epoch+1}.pth"
             save_model(args, model, fp, push_to_wandb=False)
 
@@ -352,7 +352,6 @@ def get_hyperparams(args: argparse.Namespace) -> dict:
         "lambda": args.lambda_,
         "num_epochs": args.num_epochs,
         "loss_fn": args.loss_fn.__name__,
-
     }
     return hyperparams
 
@@ -403,6 +402,7 @@ def parse_args():
 
     # logging & validation
     parser.add_argument("--logging_steps", type=int, default=1, help="Log every X steps")
+    parser.add_argument("--save_epochs", type=int, default=10, help="Save model every X epochs")
     parser.add_argument("--val_steps", type=str, default='epoch', help="Validate every X steps")
     parser.add_argument("--checkpoint", type=str, 
                         # default="mrmackamoo/mechanistic-interpretability/model:v13", 
