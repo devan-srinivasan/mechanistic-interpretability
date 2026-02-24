@@ -133,14 +133,15 @@ def train(args: argparse.Namespace,
     optimizer: optim.Optimizer = None,
     accelerator: Accelerator = None
 ):
-    # Create run directory with timestamp
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = f"{args.save_dir}/{args.run_object.name}_{timestamp}"
-    os.makedirs(output_dir, exist_ok=True)
+    if not GPU or accelerator.is_main_process:
+        # Create run directory with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = f"{args.save_dir}/{args.run_object.name}_{timestamp}"
+        os.makedirs(output_dir, exist_ok=True)
 
-    # Print number of trainable parameters
-    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    if not GPU or accelerator.is_main_process: print(f"Number of trainable parameters in model: {num_params}")
+        # Print number of trainable parameters
+        num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Number of trainable parameters in model: {num_params}")
 
     # Device setup
     # device = torch.device(DEVICE)
@@ -409,13 +410,12 @@ if __name__ == "__main__":
         args.run_object = run
 
     # Load the WikiText dataset from Hugging Face
-    if not GPU or accelerator.is_main_process:
-        print("Loading Dataset...")
+    if not GPU or accelerator.is_main_process: print("Loading Dataset...")
 
     # Load dataset locally
     dataset = load_dataset("wikitext", "wikitext-103-raw-v1", split="train")
 
-    print(f"{len(dataset)} training samples")
+    if not GPU or accelerator.is_main_process: print(f"{len(dataset)} training samples")
 
     # Create sampler for DDP
     sampler = DistributedSampler(dataset, shuffle=True, seed=42)
@@ -484,7 +484,7 @@ if __name__ == "__main__":
         eval_result = eval(model, val_dataloader, args)
         print(f"Eval Loss: {eval_result['loss']:.6f}")
     else:
-        train(args, model, train_dataloader, val_dataloader)
+        train(args, model, train_dataloader, val_dataloader, optimizer, accelerator if GPU else None)
 
     # Finish wandb run
     run.finish()
