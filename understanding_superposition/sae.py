@@ -142,12 +142,12 @@ def train(args: argparse.Namespace,
     if not GPU or accelerator.is_main_process: print(f"Number of trainable parameters in model: {num_params}")
 
     # Device setup
-    device = torch.device(DEVICE)
+    # device = torch.device(DEVICE)
     # print(f"Using device: {device}")
     # args.run_object.log({"device": DEVICE})
 
     # Move model to device
-    model.to(torch.float32).to(device)
+    # model.to(torch.float32).to(device)
     
     model.train()
     
@@ -158,11 +158,11 @@ def train(args: argparse.Namespace,
         epoch_loss = 0
         num_batches = 0
 
-        code_activity = torch.zeros(model.hidden_dim).to("cpu")
+        code_activity = torch.zeros(model.hidden_dim)
         n_samples = 0
         batch_idx = 0
         for batch_embeddings in train_dataloader:
-            batch_embeddings = batch_embeddings.to(device)
+            # batch_embeddings = batch_embeddings.to(device)
             
             # Forward pass
             outputs, codes = model(batch_embeddings)
@@ -272,7 +272,7 @@ def eval(model: SAE, val_dataloader: DataLoader, args: argparse.Namespace, log_t
 
     with torch.no_grad():
         for batch_embeddings, in val_dataloader:
-            batch_embeddings = batch_embeddings.to(device)
+            # batch_embeddings = batch_embeddings.to(device)
             outputs, codes = model(batch_embeddings)
             all_codes.append(codes.detach().cpu())
 
@@ -337,7 +337,7 @@ def save_model(args, model: SAE, dir: str, push_to_wandb: bool = True, accelerat
 # parse command line arguments
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--device", type=str, help="Device to use for training and evaluation (e.g., 'cuda:0', 'mps')")
+    parser.add_argument("--device", type=str, default='cuda', help="'cuda:0', 'mps', ..., or 'cuda' for all visible GPUs (accelerate)")
     parser.add_argument("--eval", 
                         # action="store_false", 
                         action="store_true",
@@ -430,7 +430,7 @@ if __name__ == "__main__":
     tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
     bert_model = BertModel.from_pretrained("bert-base-uncased", output_hidden_states=True)
     bert_model.eval()  # Set to evaluation mode
-    bert_model.to("cpu")  # Ensure the model runs on CPU
+    # bert_model.to("cpu")  # Ensure the model runs on CPU
 
     # Define a collator to tokenize and generate embeddings
     def collate_fn(batch):
