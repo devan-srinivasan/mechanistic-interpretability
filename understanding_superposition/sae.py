@@ -381,6 +381,9 @@ if __name__ == "__main__":
 
     args.loss_fn = LOSS_FNS[args.loss_fn]
 
+    if GPU:
+        accelerator = Accelerator()
+
     # override
     # args.eval = True
     # args.checkpoint = "runs/moonlit-heartthrob-128_20260215_133409/model_epoch_8.pth"
@@ -391,27 +394,24 @@ if __name__ == "__main__":
             GPU = True
 
     # Initialize wandb run
-    if args.wandb_api_key is None:
-        args.wandb_api_key = os.getenv("WANDB_API_KEY")
-    wandb.login(key=args.wandb_api_key)
-    run = wandb.init(
-        project="mechanistic-interpretability",
-        config=vars(args),
-        dir=args.save_dir,
-        reinit=True
-    )
+    if not GPU or accelerator.is_main_process:
+        if args.wandb_api_key is None:
+            args.wandb_api_key = os.getenv("WANDB_API_KEY")
+        wandb.login(key=args.wandb_api_key)
+        run = wandb.init(
+            project="mechanistic-interpretability",
+            config=vars(args),
+            dir=args.save_dir,
+            reinit=True
+        )
 
-    args.run_object = run
-
-    if GPU:
-        accelerator = Accelerator()
+        args.run_object = run
 
     # Load the WikiText dataset from Hugging Face
     if not GPU or accelerator.is_main_process:
         print("Streaming Dataset...")
 
     dataset = load_dataset("wikitext", "wikitext-103-raw-v1", streaming=True, split="train")
-    dataset.shuffle(buffer_size=10000, seed=42)  # Shuffle the dataset with a buffer size of 10,000
 
     dataset = dataset.shuffle(
         buffer_size=10_000,
