@@ -155,6 +155,8 @@ def train(args: argparse.Namespace,
     
     num_epochs = args.num_epochs
     global_step = 0
+
+    print(f"memory allocated before training: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
     
     for epoch in range(num_epochs):
         epoch_loss = 0
@@ -173,7 +175,7 @@ def train(args: argparse.Namespace,
 
             with torch.no_grad():
                 # we reshape to n_f, batch * seq_len so we can sum activity over all tokens
-                code_activity += (codes.reshape(codes.size(2), -1).abs() > 0.0001).float().sum(dim=-1).cpu()
+                code_activity += (codes.detach().reshape(codes.size(2), -1).abs() > 0.0001).float().sum(dim=-1).cpu()
                 n_samples += batch_embeddings.size(0)
             
             # Compute loss
