@@ -156,7 +156,7 @@ def train(args: argparse.Namespace,
     num_epochs = args.num_epochs
     global_step = 0
 
-    print(f"memory allocated before training: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+    # print(f"memory allocated before training: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
     
     for epoch in range(num_epochs):
         epoch_loss = 0
@@ -386,7 +386,7 @@ if __name__ == "__main__":
     args.loss_fn = LOSS_FNS[args.loss_fn]
 
     if GPU:
-        accelerator = Accelerator(fp16=True)
+        accelerator = Accelerator()
 
     # override
     # args.eval = True
