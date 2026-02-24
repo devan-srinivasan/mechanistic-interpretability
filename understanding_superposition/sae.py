@@ -175,7 +175,6 @@ def train(args: argparse.Namespace,
             outputs, codes = model(batch_embeddings)
 
             # [TEMPORARY] track code activity for logging
-
             with torch.no_grad():
                 # we reshape to n_f, batch * seq_len so we can sum activity over all tokens
                 code_activity += (codes.reshape(codes.size(2), -1).abs() > 0.0001).float().sum(dim=-1)
@@ -426,7 +425,7 @@ if __name__ == "__main__":
     if not GPU or accelerator.is_main_process: print(f"{len(dataset)} training samples")
 
     # Create sampler for DDP
-    sampler = DistributedSampler(dataset, shuffle=True, seed=42)
+    # sampler = DistributedSampler(dataset, shuffle=True, seed=42)
 
     # Set the layer to extract embeddings from
     layer = 3  # Change this to the desired layer
@@ -463,7 +462,7 @@ if __name__ == "__main__":
         batch_size=args.train_batch_size,
         # shuffle=True,
         collate_fn=collate_fn,
-        sampler=sampler if GPU else None,
+        # sampler=sampler if GPU else None,
         drop_last=True
     )
 
