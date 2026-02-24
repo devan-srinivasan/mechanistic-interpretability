@@ -175,7 +175,7 @@ def train(args: argparse.Namespace,
 
             with torch.no_grad():
                 # we reshape to n_f, batch * seq_len so we can sum activity over all tokens
-                code_activity += (codes.detach().reshape(codes.size(2), -1).abs() > 0.0001).float().sum(dim=-1).cpu()
+                code_activity += (codes.reshape(codes.size(2), -1).abs() > 0.0001).float().sum(dim=-1)
                 n_samples += batch_embeddings.size(0)
             
             # Compute loss
