@@ -160,7 +160,7 @@ def train(args: argparse.Namespace,
         epoch_loss = 0
         num_batches = 0
 
-        code_activity = torch.zeros(model.hidden_dim).to(accelerator.device)
+        code_activity = torch.zeros(768 * 256).to(accelerator.device)
         n_samples = 0
         batch_idx = 0
         for batch_embeddings in train_dataloader:
