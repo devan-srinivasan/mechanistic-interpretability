@@ -179,7 +179,10 @@ def train(args: argparse.Namespace,
                 n_samples += batch_embeddings.size(0)
             
             # Compute loss
-            loss = args.loss_fn(outputs, batch_embeddings, codes=codes, lambda_=args.lambda_, decoder_weight=model.decoder.weight)
+            loss = args.loss_fn(
+                outputs, batch_embeddings, codes=codes, 
+                lambda_=args.lambda_, 
+                decoder_weight=model.decoder.weight if not GPU else model.module.decoder.weight)
 
             # Backward pass
             optimizer.zero_grad()
