@@ -386,7 +386,7 @@ if __name__ == "__main__":
     args.loss_fn = LOSS_FNS[args.loss_fn]
 
     if GPU:
-        accelerator = Accelerator()
+        accelerator = Accelerator(fp16=True)
 
     # override
     # args.eval = True
