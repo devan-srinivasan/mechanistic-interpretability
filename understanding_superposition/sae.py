@@ -1,22 +1,22 @@
 import torch, os, torch.nn as nn, torch.optim as optim, torch.nn.functional as F
 import argparse, json
 from torch.utils.data import DataLoader, TensorDataset
-from basis import tao_construction
 from transformers import BertModel, BertTokenizer
 from datetime import datetime
 import wandb
 from dotenv import load_dotenv
-from tqdm import tqdm
-import string
 from datasets import load_dataset
 from transformers import BertTokenizer, BertModel
+from accelerate import Accelerator
 
 if torch.mps.is_available():
     ROOT_DIR = "/Users/mrmackamoo/Projects/mechanistic-interpretability"
     DEVICE = "cpu"
+    GPU = False
 else:
     ROOT_DIR = "/h/120/devan/interp/mechanistic-interpretability" # running on sahitya
     DEVICE = "cuda:4"
+    GPU = True
 
 load_dotenv(dotenv_path=f"{ROOT_DIR}/.env")
 
@@ -126,7 +126,12 @@ def load_model(
         print(f"Successfully loaded model from {dir}")
     return model
 
-def train(args: argparse.Namespace, model: SAE, train_dataloader: DataLoader, val_dataloader: DataLoader = None):
+def train(args: argparse.Namespace, 
+    model: SAE, 
+    train_dataloader: DataLoader, val_dataloader: DataLoader = None, 
+    optimizer: optim.Optimizer = None,
+    accelerator: Accelerator = None
+):
     # Create run directory with timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = f"{args.save_dir}/{args.run_object.name}_{timestamp}"
@@ -134,17 +139,16 @@ def train(args: argparse.Namespace, model: SAE, train_dataloader: DataLoader, va
 
     # Print number of trainable parameters
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Number of trainable parameters in model: {num_params}")
+    if not GPU or accelerator.is_main_process: print(f"Number of trainable parameters in model: {num_params}")
 
     # Device setup
     device = torch.device(DEVICE)
-    print(f"Using device: {device}")
-    args.run_object.log({"device": DEVICE})
+    # print(f"Using device: {device}")
+    # args.run_object.log({"device": DEVICE})
 
     # Move model to device
     model.to(torch.float32).to(device)
     
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
     model.train()
     
     num_epochs = args.num_epochs
@@ -175,7 +179,12 @@ def train(args: argparse.Namespace, model: SAE, train_dataloader: DataLoader, va
 
             # Backward pass
             optimizer.zero_grad()
-            loss.backward()
+
+            if GPU:
+                accelerator.backward(loss)
+            else:
+                loss.backward()
+
             optimizer.step()
             
             epoch_loss += loss.item()
@@ -183,18 +192,19 @@ def train(args: argparse.Namespace, model: SAE, train_dataloader: DataLoader, va
             global_step += batch_embeddings.size(0)
             
             # Log loss to wandb every step
-            args.run_object.log({"train/loss": loss.item(), "global_step": global_step})
+            if not GPU or accelerator.is_main_process: args.run_object.log({"train/loss": loss.item(), "global_step": global_step})
             
             # Print and log every args.logging_steps
-            if (batch_idx + 1) % args.logging_steps == 0 or (batch_idx + 1) == len(train_dataloader):
-                avg_loss = epoch_loss / num_batches
-                print(f"\tBatch {batch_idx+1}, Loss: {loss:.6f}")
-                args.run_object.log({
-                    "train/avg_loss": avg_loss,
-                    "epoch": epoch + 1,
-                    "batch": batch_idx + 1,
-                    "global_step": global_step
-                })
+            if not GPU or accelerator.is_main_process: 
+                if (batch_idx + 1) % args.logging_steps == 0 or (batch_idx + 1) == len(train_dataloader):
+                    avg_loss = epoch_loss / num_batches
+                    print(f"\tBatch {batch_idx+1}, Loss: {loss:.6f}")
+                    args.run_object.log({
+                        "train/avg_loss": avg_loss,
+                        "epoch": epoch + 1,
+                        "batch": batch_idx + 1,
+                        "global_step": global_step
+                    })
 
             # Run eval and log every args.val_steps
             if val_dataloader:
@@ -219,23 +229,33 @@ def train(args: argparse.Namespace, model: SAE, train_dataloader: DataLoader, va
 
             batch_idx += 1
 
-        avg_loss = epoch_loss / num_batches
-        print(f"Epoch {epoch+1}/{num_epochs}, Avg. Loss: {avg_loss:.6f} Epoch Loss: {epoch_loss:.6f}")
-        args.run_object.log({
-            # "train/epoch_avg_loss": avg_loss,
-            "train/epoch_loss": epoch_loss,
-            "epoch": epoch + 1,
-            "global_step": global_step,
+        # TODO wait for processes, gather codes_activity properly
+        if not GPU or accelerator.is_main_process: 
+            accelerator.wait_for_everyone()
+            code_activity = accelerator.gather(code_activity)
+            n_samples = accelerator.gather(n_samples)
+            code_activity = code_activity.sum(dim=0)
+            n_samples = n_samples.sum()
 
-            # [TEMPORARY] log code activity
-            "train/feat_n_active": (code_activity > 0).sum().item(),
-            "train/sparsity": (code_activity[code_activity > 0] / n_samples).mean().item()
-        })
+        avg_loss = epoch_loss / num_batches
+        if not GPU or accelerator.is_main_process: print(f"Epoch {epoch+1}/{num_epochs}, Avg. Loss: {avg_loss:.6f} Epoch Loss: {epoch_loss:.6f}")
+        if not GPU or accelerator.is_main_process: 
+            args.run_object.log({
+                # "train/epoch_avg_loss": avg_loss,
+                "train/epoch_loss": epoch_loss,
+                "epoch": epoch + 1,
+                "global_step": global_step,
+
+                # [TEMPORARY] log code activity
+                "train/feat_n_active": (code_activity > 0).sum().item(),
+                "train/sparsity": (code_activity[code_activity > 0] / n_samples).mean().item()
+            })
     
         # Save model and log artifact
-        if (epoch + 1) % args.save_epochs == 0 or (epoch + 1) == num_epochs:
-            fp = f"{output_dir}/model_epoch_{epoch+1}.pth"
-            save_model(args, model, fp, push_to_wandb=False)
+        if not GPU or accelerator.is_main_process: 
+            if (epoch + 1) % args.save_epochs == 0 or (epoch + 1) == num_epochs:
+                fp = f"{output_dir}/model_epoch_{epoch+1}.pth"
+                save_model(args, model, fp, push_to_wandb=False)
 
 def eval(model: SAE, val_dataloader: DataLoader, args: argparse.Namespace, log_to_wandb: bool = False) -> dict:
     model.eval()
@@ -297,9 +317,11 @@ def get_hyperparams(args: argparse.Namespace) -> dict:
     }
     return hyperparams
 
-def save_model(args, model: SAE, dir: str, push_to_wandb: bool = True):
+def save_model(args, model: SAE, dir: str, push_to_wandb: bool = True, accelerator: Accelerator = None):
     # save the model as as well as all hyperparams (as json) to recreate it
     os.makedirs(dir, exist_ok=True)
+    if accelerator:
+        model = accelerator.unwrap_model(model)
     torch.save(model.state_dict(), f"{dir}/model.pth")
     hyperparams = get_hyperparams(args)
     with open(f"{dir}/hyperparams.json", "w") as f:
@@ -365,6 +387,8 @@ if __name__ == "__main__":
 
     if args.device:
         DEVICE = args.device
+        if args.device.startswith("cuda"):
+            GPU = True
 
     # Initialize wandb run
     if args.wandb_api_key is None:
@@ -379,9 +403,25 @@ if __name__ == "__main__":
 
     args.run_object = run
 
+    if GPU:
+        accelerator = Accelerator()
+
     # Load the WikiText dataset from Hugging Face
-    print("Streaming Dataset...")
+    if not GPU or accelerator.is_main_process:
+        print("Streaming Dataset...")
+
     dataset = load_dataset("wikitext", "wikitext-103-raw-v1", streaming=True, split="train")
+    dataset.shuffle(buffer_size=10000, seed=42)  # Shuffle the dataset with a buffer size of 10,000
+
+    dataset = dataset.shuffle(
+        buffer_size=10_000,
+        seed=42
+    )
+
+    dataset = dataset.shard(
+        num_shards=accelerator.num_processes,
+        index=accelerator.process_index
+    )
 
     # Set the layer to extract embeddings from
     layer = 3  # Change this to the desired layer
@@ -434,6 +474,12 @@ if __name__ == "__main__":
         model = load_model(args.checkpoint, args.tmp_dir)
     else:
         model = SAE(args.embed_dim, args.hidden_dim)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+
+    model, optimizer, train_dataloader = accelerator.prepare(
+        model, optimizer, train_dataloader
+    )
     
     if args.eval:
         eval_result = eval(model, val_dataloader, args)
