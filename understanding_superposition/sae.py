@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from datasets import load_dataset
 from transformers import BertTokenizer, BertModel
 from accelerate import Accelerator
+from torch.utils.data.distributed import DistributedSampler
 
 if torch.mps.is_available():
     ROOT_DIR = "/Users/mrmackamoo/Projects/mechanistic-interpretability"
@@ -198,7 +199,7 @@ def train(args: argparse.Namespace,
             if not GPU or accelerator.is_main_process: 
                 if (batch_idx + 1) % args.logging_steps == 0 or (batch_idx + 1) == len(train_dataloader):
                     avg_loss = epoch_loss / num_batches
-                    print(f"\tBatch {batch_idx+1}, Loss: {loss:.6f}")
+                    print(f"\tBatch {batch_idx+1}/{len(train_dataloader)}, Loss: {loss:.6f}")
                     args.run_object.log({
                         "train/avg_loss": avg_loss,
                         "epoch": epoch + 1,
@@ -409,19 +410,15 @@ if __name__ == "__main__":
 
     # Load the WikiText dataset from Hugging Face
     if not GPU or accelerator.is_main_process:
-        print("Streaming Dataset...")
+        print("Loading Dataset...")
 
-    dataset = load_dataset("wikitext", "wikitext-103-raw-v1", streaming=True, split="train")
+    # Load dataset locally
+    dataset = load_dataset("wikitext", "wikitext-103-raw-v1", split="train")
 
-    dataset = dataset.shuffle(
-        buffer_size=10_000,
-        seed=42
-    )
+    print(f"{len(dataset)} training samples")
 
-    dataset = dataset.shard(
-        num_shards=accelerator.num_processes,
-        index=accelerator.process_index
-    )
+    # Create sampler for DDP
+    sampler = DistributedSampler(dataset, shuffle=True, seed=42)
 
     # Set the layer to extract embeddings from
     layer = 3  # Change this to the desired layer
@@ -456,6 +453,8 @@ if __name__ == "__main__":
         batch_size=args.train_batch_size,
         # shuffle=True,
         collate_fn=collate_fn,
+        sampler=sampler if GPU else None,
+        drop_last=True
     )
 
     # val_dataloader = DataLoader(
