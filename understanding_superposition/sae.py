@@ -7,6 +7,9 @@ from datetime import datetime
 import wandb
 from dotenv import load_dotenv
 from tqdm import tqdm
+import string
+from datasets import load_dataset
+from transformers import BertTokenizer, BertModel
 
 if torch.mps.is_available():
     ROOT_DIR = "/Users/mrmackamoo/Projects/mechanistic-interpretability"
@@ -70,85 +73,6 @@ class SAE(nn.Module):
 # -------------------------
 # Training
 # -------------------------
-def construct_model(embed_dim, hidden_dim,) -> SAE:
-    model = SAE(
-        embed_dim=embed_dim,
-        hidden_dim=hidden_dim
-    )
-
-    # def project_decoder_grad(grad):
-    #     W = model.decoder.weight.detach()
-    #     W_norm = W / (W.norm(dim=0, keepdim=True) + 1e-8)
-    #     parallel = (grad * W_norm).sum(dim=0, keepdim=True) * W_norm
-    #     return grad - parallel
-
-    # model.decoder.weight.register_hook(project_decoder_grad)
-
-    return model
-
-def generate_dataset(
-    words: list[str], output_dir: str, layer: int, 
-    train_split: float = 0.85, val_split: float = 0.15,
-    batch_size: int = 10,
-):
-    
-    train_file = os.path.join(output_dir, f"train_{layer}.pt")
-    val_file = os.path.join(output_dir, f"val_{layer}.pt")
-
-    if os.path.exists(train_file) and os.path.exists(val_file):
-        train_embeddings = torch.load(train_file)
-        val_embeddings = torch.load(val_file)
-    else:
-        os.makedirs(output_dir, exist_ok=True)
-        bert = BertModel.from_pretrained("bert-base-cased", output_hidden_states=True)
-        tokenizer = BertTokenizer.from_pretrained("bert-base-cased")
-
-        embeddings = []
-
-        # Tokenize and embed words in batches
-        for i in tqdm(range(0, len(words), batch_size), desc="Generating embeddings"):
-            batch_words = words[i:i + batch_size]
-            
-            # Tokenize the batch of words and ensure they are at position 1
-            inputs = tokenizer(batch_words, return_tensors="pt", padding=True, truncation=True)
-            inputs = {key: val.to(DEVICE) for key, val in inputs.items()}
-
-            # Get hidden states from BERT
-            with torch.no_grad():
-                outputs = bert(**inputs)
-                hidden_states = outputs.hidden_states[layer]
-
-            # Extract embeddings for the words at position 1
-            batch_embeddings = hidden_states[:, 1, :]  # Shape: (batch_size, 768)
-
-            # Stack embeddings for the batch and add to the overall list
-            embeddings.append(batch_embeddings)
-
-        # Concatenate all embeddings and split into train/val sets
-        embeddings = torch.cat(embeddings, dim=0)  # Shape: (len(words), 768)
-        
-        # Randomly shuffle and split embeddings into train and val sets
-        num_samples = embeddings.size(0)
-        indices = torch.randperm(num_samples)
-        train_size = int(train_split * num_samples)
-
-        train_indices = indices[:train_size]
-        val_indices = indices[train_size:]
-
-        train_embeddings = embeddings[train_indices]
-        val_embeddings = embeddings[val_indices]
-
-        torch.save(train_embeddings, train_file)
-        torch.save(val_embeddings, val_file)
-
-        # Save indices to output_dir/indices.txt
-        with open(os.path.join(output_dir, "indices.txt"), "w") as f:
-            for idx in indices.tolist():
-                f.write(f"{idx}\n")
-
-    train_dataset = TensorDataset(train_embeddings)
-    val_dataset = TensorDataset(val_embeddings)
-    return train_dataset, val_dataset
 
 def mse_loss_fn(reconstructed, original, codes, lambda_, decoder_weight):
     mse_loss = nn.MSELoss()(reconstructed, original)
@@ -190,7 +114,7 @@ def load_model(
     with open(hyp_path, "r") as f:
         hyperparams = json.load(f)
 
-    model = construct_model(
+    model = SAE(
         embed_dim=hyperparams["embed_dim"],
         hidden_dim=hyperparams["hidden_dim"],
     )
@@ -230,11 +154,21 @@ def train(args: argparse.Namespace, model: SAE, train_dataloader: DataLoader, va
         epoch_loss = 0
         num_batches = 0
 
-        for batch_idx, (batch_embeddings,) in enumerate(train_dataloader):
+        code_activity = torch.zeros(model.hidden_dim).to("cpu")
+        n_samples = 0
+        batch_idx = 0
+        for batch_embeddings in train_dataloader:
             batch_embeddings = batch_embeddings.to(device)
             
             # Forward pass
             outputs, codes = model(batch_embeddings)
+
+            # [TEMPORARY] track code activity for logging
+
+            with torch.no_grad():
+                # we reshape to n_f, batch * seq_len so we can sum activity over all tokens
+                code_activity += (codes.reshape(codes.size(2), -1).abs() > 0.0001).float().sum(dim=-1).cpu()
+                n_samples += batch_embeddings.size(0)
             
             # Compute loss
             loss = args.loss_fn(outputs, batch_embeddings, codes=codes, lambda_=args.lambda_, decoder_weight=model.decoder.weight)
@@ -254,7 +188,7 @@ def train(args: argparse.Namespace, model: SAE, train_dataloader: DataLoader, va
             # Print and log every args.logging_steps
             if (batch_idx + 1) % args.logging_steps == 0 or (batch_idx + 1) == len(train_dataloader):
                 avg_loss = epoch_loss / num_batches
-                print(f"\tBatch {batch_idx+1}/{len(train_dataloader)}, Loss: {loss:.6f}")
+                print(f"\tBatch {batch_idx+1}, Loss: {loss:.6f}")
                 args.run_object.log({
                     "train/avg_loss": avg_loss,
                     "epoch": epoch + 1,
@@ -282,14 +216,20 @@ def train(args: argparse.Namespace, model: SAE, train_dataloader: DataLoader, va
                         for k, v in eval_result.items():
                             log_dict[f"val/{k}"] = v
                         args.run_object.log(log_dict)
-        
+
+            batch_idx += 1
+
         avg_loss = epoch_loss / num_batches
         print(f"Epoch {epoch+1}/{num_epochs}, Avg. Loss: {avg_loss:.6f} Epoch Loss: {epoch_loss:.6f}")
         args.run_object.log({
             # "train/epoch_avg_loss": avg_loss,
             "train/epoch_loss": epoch_loss,
             "epoch": epoch + 1,
-            "global_step": global_step
+            "global_step": global_step,
+
+            # [TEMPORARY] log code activity
+            "train/feat_n_active": (code_activity > 0).sum().item(),
+            "train/sparsity": (code_activity[code_activity > 0] / n_samples).mean().item()
         })
     
         # Save model and log artifact
@@ -307,7 +247,7 @@ def eval(model: SAE, val_dataloader: DataLoader, args: argparse.Namespace, log_t
     activity_tensor = torch.zeros(model.hidden_dim)
 
     all_codes = []
-    mse = []
+    # mse = []
     cos_sim = []
 
     with torch.no_grad():
@@ -316,10 +256,11 @@ def eval(model: SAE, val_dataloader: DataLoader, args: argparse.Namespace, log_t
             outputs, codes = model(batch_embeddings)
             all_codes.append(codes.detach().cpu())
 
-            cos_ = F.cosine_similarity(outputs, batch_embeddings)
+            non_zero_codes = (codes.abs() > 0.0001).float().sum(dim=1)
+            cos_ = F.cosine_similarity(outputs, batch_embeddings)[non_zero_codes > 0]
             cos_sim.extend(cos_.cpu().tolist())
 
-            mse.extend(F.mse_loss(outputs, batch_embeddings, reduction="none").cpu().tolist())
+            # mse.extend(F.mse_loss(outputs, batch_embeddings, reduction="none").cpu().tolist())
 
             loss = args.loss_fn(outputs, batch_embeddings, codes=codes, lambda_=args.lambda_, decoder_weight=model.decoder.weight)
             total_loss += loss.item()
@@ -337,7 +278,8 @@ def eval(model: SAE, val_dataloader: DataLoader, args: argparse.Namespace, log_t
     return {
         "loss": avg_loss,
         "mean_cos_sim": sum(cos_sim) / len(cos_sim),
-        "mse": sum(mse) / len(mse),
+        "%_zero_samples": (len(all_codes) - len(cos_sim)) / len(all_codes) * 100,
+        # "mse": sum(mse) / len(mse),
         "feat_n_active": (activity_tensor > 0).sum().item(),
         "feat_avg_activation": (activity_tensor / num_val_samples)[activity_tensor > 0].mean().item(),  # compute average activation over active features. not dead ones
     }
@@ -392,12 +334,12 @@ def parse_args():
 
     # hyperparameters
     parser.add_argument("--loss_fn", type=str, default='mse', choices=LOSS_FNS.keys(), help=str(list(LOSS_FNS.keys())))
-    parser.add_argument("--train_batch_size", type=int, default=1000, help="Training batch size")
+    parser.add_argument("--train_batch_size", type=int, default=10, help="Training batch size")
     parser.add_argument("--val_batch_size", type=int, default=500, help="Validation batch size")
     parser.add_argument("--embed_dim", type=int, default=768, help="Embedding dimension")
     parser.add_argument("--hidden_dim", type=int, default=768*256, help="Hidden dimension in encoder/decoder")
     parser.add_argument("--lambda_", type=float, default=5, help="Sparsity penalty coefficient")
-    parser.add_argument("--num_epochs", type=int, default=350, help="Number of epochs")
+    parser.add_argument("--num_epochs", type=int, default=100, help="Number of epochs")
     parser.add_argument("--learning_rate", type=float, default=5e-5, help="Learning rate")
 
     # logging & validation
@@ -437,21 +379,61 @@ if __name__ == "__main__":
 
     args.run_object = run
 
-    with open(f"{ROOT_DIR}/understanding_superposition/data/bert_words.json", "r") as f:
-        words = json.load(f)
+    # Load the WikiText dataset from Hugging Face
+    print("Streaming Dataset...")
+    dataset = load_dataset("wikitext", "wikitext-103-raw-v1", streaming=True, split="train")
 
-    train_dataset, val_dataset = generate_dataset(words, args.data_file, layer=0, train_split=0.8, val_split=0.1)
-    
-    train_dataloader = DataLoader(train_dataset, batch_size=args.train_batch_size, shuffle=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=args.val_batch_size, shuffle=False)
+    # Set the layer to extract embeddings from
+    layer = 3  # Change this to the desired layer
 
-    print(f"Loaded {len(train_dataset)} training samples")
-    print(f"Loaded {len(val_dataset)} validation samples")
+    # Initialize the tokenizer and model
+    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+    bert_model = BertModel.from_pretrained("bert-base-uncased", output_hidden_states=True)
+    bert_model.eval()  # Set to evaluation mode
+    bert_model.to("cpu")  # Ensure the model runs on CPU
+
+    # Define a collator to tokenize and generate embeddings
+    def collate_fn(batch):
+        texts = [item["text"] for item in batch if item["text"].strip()]
+        tokenized = tokenizer(
+            texts,
+            padding="max_length",
+            truncation=True,
+            max_length=512,
+            return_tensors="pt",
+        )
+        with torch.no_grad():
+            outputs = bert_model(**tokenized)
+            embeddings = outputs.hidden_states[layer]  # Extract embeddings from the specified layer
+        return embeddings
+
+    # Create DataLoaders for training and validation
+    # train_dataset = dataset["train"]
+    # val_dataset = dataset["validation"]
+
+    train_dataloader = DataLoader(
+        dataset,
+        batch_size=args.train_batch_size,
+        # shuffle=True,
+        collate_fn=collate_fn,
+    )
+
+    # val_dataloader = DataLoader(
+    #     val_dataset,
+    #     batch_size=args.val_batch_size,
+    #     shuffle=False,
+    #     collate_fn=collate_fn,
+    # )
+
+    val_dataloader = None
+
+    # print(f"Loaded {len(train_dataset)} training samples")
+    # print(f"Loaded {len(val_dataset)} validation samples")
 
     if args.checkpoint:
         model = load_model(args.checkpoint, args.tmp_dir)
     else:
-        model = construct_model(args.embed_dim, args.hidden_dim)
+        model = SAE(args.embed_dim, args.hidden_dim)
     
     if args.eval:
         eval_result = eval(model, val_dataloader, args)
