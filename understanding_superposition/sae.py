@@ -167,6 +167,9 @@ def train(args: argparse.Namespace,
         batch_idx = 0
         for batch_embeddings in train_dataloader:
             # batch_embeddings = batch_embeddings.to(device)
+
+            if batch_embeddings.size(0) == 0:
+                continue # empty batch
             
             # Forward pass
             outputs, codes = model(batch_embeddings)
@@ -437,6 +440,8 @@ if __name__ == "__main__":
     # Define a collator to tokenize and generate embeddings
     def collate_fn(batch):
         texts = [item["text"] for item in batch if item["text"].strip()]
+        if not texts:
+            return torch.empty(0, 512, 768)  # Return an empty tensor if no valid texts
         tokenized = tokenizer(
             texts,
             padding="max_length",
