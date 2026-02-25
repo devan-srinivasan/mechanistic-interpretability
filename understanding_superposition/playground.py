@@ -13,9 +13,11 @@
 from sae import SAE
 import torch
 
-input = torch.randn((64, 512, 768))
+dev = "cuda:8"
 
-model = SAE(embed_dim=768, hidden_dim=768 * 50)
+input = torch.randn((64, 512, 768)).to(dev)
+
+model = SAE(embed_dim=768, hidden_dim=768 * 50).to(dev)
 
 optim = torch.optim.Adam(model.parameters(), lr=1e-3)
 
