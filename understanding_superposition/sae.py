@@ -1,4 +1,5 @@
 import torch, os, torch.nn as nn, torch.optim as optim, torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 import argparse, json
 from torch.utils.data import DataLoader, TensorDataset
 from transformers import BertModel, BertTokenizer
@@ -63,11 +64,12 @@ class SAE(nn.Module):
         # with torch.no_grad():
         #     self.decoder.weight.div_(self.decoder.weight.norm(dim=0, keepdim=True) + 1e-8)
 
+    def _encode(self, x):
+        return self.relu(self.encoder(x))
+
     def forward(self, x):
-        # Subtract pre-bias
-        x = x # + self.pre_bias
-        # Pass through encoder, activation, and decoder
-        codes = self.relu(self.encoder(x))
+        # checkpoint the large hidden activation
+        codes = checkpoint(self._encode, x)
         reconstructed = self.decoder(codes)
         return reconstructed, codes
 
