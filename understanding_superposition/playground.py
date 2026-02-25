@@ -16,6 +16,7 @@ print("Usage before input:")
 print_memory_usage(dev)
 
 input = torch.randn((64, 512, 768)).to(dev)
+input.requires_grad_()
 
 print("Usage before model:")
 print_memory_usage(dev)
