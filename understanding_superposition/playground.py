@@ -10,7 +10,7 @@ def print_memory_usage(dev):
     free_memory = reserved_memory - allocated_memory
     print(f"Allocated: {allocated_memory:.2f} GB, Reserved but Unallocated: {free_memory:.2f} GB, Total: {total_memory:.2f} GB")
 
-dev = "cuda:8"
+dev = "cuda:7"
 
 print("Usage before input:")
 print_memory_usage(dev)
