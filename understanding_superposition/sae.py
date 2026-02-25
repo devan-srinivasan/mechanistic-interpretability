@@ -69,7 +69,7 @@ class SAE(nn.Module):
 
     def forward(self, x):
         # checkpoint the large hidden activation
-        codes = checkpoint(self._encode, x)
+        codes = checkpoint(self._encode, x, use_reentrant=False)
         reconstructed = self.decoder(codes)
         return reconstructed, codes
 
