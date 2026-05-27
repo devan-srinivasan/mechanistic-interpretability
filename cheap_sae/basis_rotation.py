@@ -30,9 +30,9 @@ ds = load_dataset("Salesforce/wikitext", "wikitext-103-v1")
 # clean ds a bit
 ds = ds.filter(lambda x: len(x["text"].split()) > 5 and not x["text"].startswith(" = "))
 
-batch_size = 32
+batch_size = 128
 learning_rate = 1e-3
-num_epochs = 100
+num_epochs = 1
 max_length = 128
 
 # -------------------------
@@ -68,6 +68,7 @@ d = d_in
 # and sparsity penalty on:
 #   sparse: X (U W)^T
 # -------------------------
+
 class UVRotation(nn.Module):
     def __init__(self, d: int, init: str = "rand", eye_noise: float = 1e-3):
         super().__init__()
@@ -197,7 +198,7 @@ for epoch in range(num_epochs):
     running = {"loss": 0.0, "match": 0.0, "sparse": 0.0, "inv": 0.0, "ortho": 0.0}
     n_steps = 0
 
-    for batch in tqdm(token_batches(ds["train"], batch_size), desc=f"epoch {epoch+1}/{num_epochs}"):
+    for batch in tqdm(token_batches(ds["train"], batch_size), desc=f"epoch {epoch+1}/{num_epochs} n_batches={len(ds['train'])//batch_size}"):
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
 
@@ -219,18 +220,18 @@ for epoch in range(num_epochs):
         # 2) Sparsity on X (U W)^T
         sparse_loss = sparse_term.abs().mean()
 
-        # 3) Encourage V ~ U^{-1}
-        I = torch.eye(d, device=device)
-        inv_loss = F.mse_loss(uv.V @ uv.U, I) + F.mse_loss(uv.U @ uv.V, I)
+        # # 3) Encourage V ~ U^{-1}
+        # I = torch.eye(d, device=device)
+        # inv_loss = F.mse_loss(uv.V @ uv.U, I) + F.mse_loss(uv.U @ uv.V, I)
 
-        # 4) Optional orthogonality-ish
-        ortho_loss = (
-            orthogonality_penalty(uv.U) + orthogonality_penalty(uv.V)
-            if lambda_ortho > 0
-            else torch.tensor(0.0, device=device)
-        )
+        # # 4) Optional orthogonality-ish
+        # ortho_loss = (
+        #     orthogonality_penalty(uv.U) + orthogonality_penalty(uv.V)
+        #     if lambda_ortho > 0
+        #     else torch.tensor(0.0, device=device)
+        # )
 
-        loss = match_loss + lambda_sparse * sparse_loss + lambda_inv * inv_loss + lambda_ortho * ortho_loss
+        loss = match_loss + lambda_sparse * sparse_loss # + lambda_inv * inv_loss + lambda_ortho * ortho_loss
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -241,8 +242,8 @@ for epoch in range(num_epochs):
             "train/loss": float(loss.item()),
             "train/match_loss": float(match_loss.item()),
             "train/sparse_loss": float(sparse_loss.item()),
-            "train/inv_loss": float(inv_loss.item()),
-            "train/ortho_loss": float(ortho_loss.item()),
+            # "train/inv_loss": float(inv_loss.item()),
+            # "train/ortho_loss": float(ortho_loss.item()),
             "train/epoch": epoch + 1,
         }
         run.log(metrics, step=global_step)
@@ -252,8 +253,8 @@ for epoch in range(num_epochs):
         running["loss"] += loss.item()
         running["match"] += match_loss.item()
         running["sparse"] += sparse_loss.item()
-        running["inv"] += inv_loss.item()
-        running["ortho"] += float(ortho_loss.item())
+        # running["inv"] += inv_loss.item()
+        # running["ortho"] += float(ortho_loss.item())
         n_steps += 1
 
     for k in running:
@@ -262,7 +263,7 @@ for epoch in range(num_epochs):
     print(
         f"epoch {epoch+1}: "
         f"loss={running['loss']:.6f} match={running['match']:.6f} "
-        f"sparse={running['sparse']:.6f} inv={running['inv']:.6f}"
+        f"sparse={running['sparse']:.6f}" # inv={running['inv']:.6f}"
     )
 
     # per-epoch logging (averages)
@@ -271,8 +272,8 @@ for epoch in range(num_epochs):
             "epoch/avg_loss": running["loss"],
             "epoch/avg_match_loss": running["match"],
             "epoch/avg_sparse_loss": running["sparse"],
-            "epoch/avg_inv_loss": running["inv"],
-            "epoch/avg_ortho_loss": running["ortho"],
+            # "epoch/avg_inv_loss": running["inv"],
+            # "epoch/avg_ortho_loss": running["ortho"],
             "epoch": epoch + 1,
         },
         step=global_step,
@@ -311,8 +312,8 @@ artifact = wandb.Artifact(
         "dataset_config": "wikitext-103-v1",
         "d": d,
         "lambda_sparse": lambda_sparse,
-        "lambda_inv": lambda_inv,
-        "lambda_ortho": lambda_ortho,
+        # "lambda_inv": lambda_inv,
+        # "lambda_ortho": lambda_ortho,
     },
 )
 artifact.add_file(local_path)
