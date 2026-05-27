@@ -25,7 +25,7 @@ output_space = B[18:18 + len(alphabet) - 1]
 in_use_mask[6:6 + len(alphabet)] = True
 in_use_mask[0:2] = True
 
-seq = 'a b a c a [eos]'
+seq = 'b b b c a b b c [eos]'
 
 streams = np.zeros((len(seq.split()), B.shape[1]))
 
@@ -48,6 +48,7 @@ def rotation_fn(S, theta):
     # using a composition of two Householder reflections we can create a dxd 
     # rotation matrix that rotates a vector in the plane spanned by pos1 and pos2 by an angle theta
 
+    assert S.shape[0] == 2
     pos1, pos2 = S[0], S[1]
 
     def householder(u):
