@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 # -------------------------
 # Setup
 # -------------------------
-device = torch.device("cuda:8" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:7" if torch.cuda.is_available() else "cpu")
 torch.set_float32_matmul_precision("high")
 
 tokenizer = BertTokenizer.from_pretrained("bert-base-cased")
