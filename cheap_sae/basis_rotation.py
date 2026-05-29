@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import BertModel, BertTokenizer, BertConfig
+from transformers import BertModel, BertTokenizer, BertConfig, BertForMaskedLM
 from datasets import load_dataset
 from tqdm import tqdm
 import wandb
@@ -30,10 +30,16 @@ ds = load_dataset("Salesforce/wikitext", "wikitext-103-v1")
 # clean ds a bit
 ds = ds.filter(lambda x: len(x["text"].split()) > 5 and not x["text"].startswith(" = "))
 
-batch_size = 128
+batch_size = 256
 learning_rate = 1e-3
-num_epochs = 1
+num_epochs = 5
 max_length = 128
+
+# For local testing
+if torch.mps.is_available():
+    ds['train'] = ds['train'].shuffle(seed=42).select(range(64))
+    ds['validation'] = ds['validation'].shuffle(seed=42).select(range(16))
+    batch_size = 4
 
 # -------------------------
 # Target: query projection at layer L
@@ -193,6 +199,8 @@ assert model_hidden_size == d
 
 global_step = 0
 
+dev_base_MLM = None
+
 for epoch in range(num_epochs):
     uv.train()
     running = {"loss": 0.0, "match": 0.0, "sparse": 0.0, "inv": 0.0, "ortho": 0.0}
@@ -279,44 +287,86 @@ for epoch in range(num_epochs):
         step=global_step,
     )
 
-# -------------------------
-# Save + log learned transformed weights (U W)^T
-# -------------------------
-uv.eval()
-with torch.no_grad():
-    UW = (uv.U @ W).detach()          # [d, d]
-    transformed_W_T = UW.T            # (U W)^T
+    # EVAL
 
-    save_obj = {
-        "layer": layer,
-        "U": uv.U.detach().cpu(),
-        "V": uv.V.detach().cpu(),
-        "W": W.detach().cpu(),
-        "b": b.detach().cpu(),
-        "UW": UW.detach().cpu(),
-        "transformed_W_T": transformed_W_T.detach().cpu(),
-        "wandb_config": dict(run.config),
-    }
+    def _eval_hook(module, input, output):
+        X = input[0].detach()
 
-    local_path = os.path.join(artifacts_dir, f"bert_qproj_layer{layer}_uv_rotation.pt")
-    torch.save(save_obj, local_path)
+        z_prime, _, _, _ = uv(X, W, b)
 
-# log to wandb as an artifact as well
-artifact = wandb.Artifact(
-    name=f"bert_qproj_layer{layer}_uv_rotation",
-    type="uv_rotation",
-    metadata={
-        "layer": layer,
-        "model_name": "bert-base-cased",
-        "dataset_name": "Salesforce/wikitext",
-        "dataset_config": "wikitext-103-v1",
-        "d": d,
-        "lambda_sparse": lambda_sparse,
-        # "lambda_inv": lambda_inv,
-        # "lambda_ortho": lambda_ortho,
-    },
-)
-artifact.add_file(local_path)
-run.log_artifact(artifact)
+        return z_prime.to(output.device)
+    
+    eval_handle = module.register_forward_hook(_eval_hook)
 
-print(f"Saved locally to {local_path} and logged W&B artifact: {artifact.name}")
+    # -------------------------
+    # EVAL on dev set (validation)
+    # -------------------------
+    uv.eval()
+    model = BertForMaskedLM.from_pretrained("bert-base-cased").to(device)
+    model.eval()
+    def _run_dev_eval(model) -> float:
+        """
+        Go through ds['validation'] and run model on it, and save the loss it outputs
+        """
+        total_loss = 0.0
+        n_batches = 0
+
+        for batch in tqdm(token_batches(ds["validation"], batch_size), desc="dev eval"):
+            input_ids = batch["input_ids"]
+            attention_mask = batch["attention_mask"]
+
+            with torch.no_grad():
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids)
+                loss = outputs.loss
+                total_loss += loss.item()
+                n_batches += 1
+
+        return total_loss, n_batches
+
+    eval_handle = model.bert.encoder.layer[layer].attention.self.query.register_forward_hook(_eval_hook)
+    dev_mlm = _run_dev_eval(model)
+    run.log({"eval/dev_mlm": dev_mlm}, step=global_step)
+    eval_handle.remove()
+
+    # If baseline not computed yet, run dev eval again WITHOUT the eval hook, store baseline, and log
+    if dev_base_MLM is None:
+        dev_base_MLM = _run_dev_eval(model)
+    run.log({"eval/dev_base_mlm": dev_base_MLM}, step=global_step)
+
+    # -------------------------
+    # Save + log learned transformed weights (U W)^T
+    # -------------------------
+    uv.eval()
+    with torch.no_grad():
+        UW = (uv.U @ W).detach()          # [d, d]
+        transformed_W_T = UW.T            # (U W)^T
+
+        save_obj = {
+            "layer": layer,
+            "U": uv.U.detach().cpu(),
+            "V": uv.V.detach().cpu(),
+            "wandb_config": dict(run.config),
+        }
+
+        local_path = os.path.join(artifacts_dir, f"bert_qproj_layer{layer}_uv_rotation.pt")
+        torch.save(save_obj, local_path)
+
+    # log to wandb as an artifact as well
+    artifact = wandb.Artifact(
+        name=f"bert_qproj_layer{layer}_uv_rotation",
+        type="uv_rotation",
+        metadata={
+            "layer": layer,
+            "model_name": "bert-base-cased",
+            "dataset_name": "Salesforce/wikitext",
+            "dataset_config": "wikitext-103-v1",
+            "d": d,
+            "lambda_sparse": lambda_sparse,
+            # "lambda_inv": lambda_inv,
+            # "lambda_ortho": lambda_ortho,
+        },
+    )
+    artifact.add_file(local_path)
+    run.log_artifact(artifact)
+
+    print(f"Saved locally to {local_path} and logged W&B artifact: {artifact.name}")
