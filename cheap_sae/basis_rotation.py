@@ -68,9 +68,9 @@ d = d_in
 transformation = Transformation(d=d, init="rand").to(device)
 
 # Loss weights
-lambda_sparse = 1   # increase to push more sparsity
+lambda_sparse = 1.0   # increase to push more sparsity
 lambda_inv = 0.0      # encourages U,V to be inverses
-lambda_ortho = 0.0     # optional orthogonality regularizer
+lambda_ortho = 1.0     # optional orthogonality regularizer
 
 optimizer = torch.optim.AdamW(transformation.parameters(), lr=learning_rate)
 
@@ -129,7 +129,7 @@ wandb_config = {
     "optimizer": "AdamW",
     # objective weights
     "lambda_sparse": lambda_sparse,
-    "lambda_inv": lambda_inv,
+    # "lambda_inv": lambda_inv,
     "lambda_ortho": lambda_ortho,
     # dimensions
     "d": d,
@@ -177,18 +177,14 @@ for epoch in range(num_epochs):
         # 2) Sparsity on X (U W)^T
         sparse_loss = sparse_term.abs().mean()
 
-        # # 3) Encourage V ~ U^{-1}
-        # I = torch.eye(d, device=device)
-        # inv_loss = ...
+        # 3) Optional orthogonality-ish
+        ortho_loss = (
+            orthogonality_penalty(transformation.T)
+            if lambda_ortho > 0
+            else torch.tensor(0.0, device=device)
+        )
 
-        # # 4) Optional orthogonality-ish
-        # ortho_loss = (
-        #     orthogonality_penalty(transformation.T)
-        #     if lambda_ortho > 0
-        #     else torch.tensor(0.0, device=device)
-        # )
-
-        loss = match_loss + lambda_sparse * sparse_loss # + lambda_inv * inv_loss + lambda_ortho * ortho_loss
+        loss = match_loss + lambda_sparse * sparse_loss + lambda_ortho * ortho_loss
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -199,8 +195,7 @@ for epoch in range(num_epochs):
             "train/loss": float(loss.item()),
             "train/match_loss": float(match_loss.item()),
             "train/sparse_loss": float(sparse_loss.item()),
-            # "train/inv_loss": float(inv_loss.item()),
-            # "train/ortho_loss": float(ortho_loss.item()),
+            "train/ortho_loss": float(ortho_loss.item()),
             "train/epoch": epoch + 1,
         }
         run.log(metrics, step=global_step)
@@ -289,7 +284,7 @@ for epoch in range(num_epochs):
             "d": d,
             "lambda_sparse": lambda_sparse,
             # "lambda_inv": lambda_inv,
-            # "lambda_ortho": lambda_ortho,
+            "lambda_ortho": lambda_ortho,
         },
     )
     artifact.add_file(local_path)
