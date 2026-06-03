@@ -19,11 +19,14 @@ class Transformation(nn.Module):
             # Pure identity makes z_prime == z_orig exactly (and inv/ortho penalties minimal),
             # so most losses/gradients start at or near zero; add tiny noise to break symmetry.
             T = torch.eye(d) + eye_noise * torch.randn(d, d)
+            T_ = torch.eye(d) + eye_noise * torch.randn(d, d)
         elif init == "rand":
             T = torch.randn(d, d) * 0.01 + torch.eye(d)
+            T_ = torch.randn(d, d) * 0.01 + torch.eye(d)
         else:
             raise ValueError("init must be 'eye' or 'rand'")
         self.T = nn.Parameter(T)
+        self.T_ = nn.Parameter(T_)
 
     def forward(self, X: torch.Tensor, W: torch.Tensor, b: torch.Tensor):
         """
@@ -34,7 +37,7 @@ class Transformation(nn.Module):
         # W: [d, d] (out, in)
         TW = self.T @ W
         sparse_term = X @ TW.T     # [B, T, d]
-        z_recon = sparse_term @ self.T + b
+        z_recon = sparse_term @ self.T_ + b
         z_orig = X @ W.T + b # [B, T, d]
         return z_recon, z_orig, sparse_term
 

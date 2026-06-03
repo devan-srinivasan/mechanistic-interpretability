@@ -168,7 +168,7 @@ for epoch in range(num_epochs):
         Y = acts["y_out"]    # [B, T, d] output of q_linear, i.e. X @ W.T + b
 
         # Run our transformation model on the captured pair for reconstruction
-        z_prime, _, sparse_term = transformation(X, W, b)  # z_prime is (X @ (U W)^T @ T.T + b)
+        z_prime, _, sparse_term = transformation(X, W, b)  # z_prime is (X @ (U W)^T @ T_^T + b)
         z_orig = Y
 
         # 1) Functional match
@@ -178,13 +178,13 @@ for epoch in range(num_epochs):
         sparse_loss = sparse_term.abs().mean()
 
         # 3) Optional orthogonality-ish
-        ortho_loss = (
-            orthogonality_penalty(transformation.T)
-            if lambda_ortho > 0
-            else torch.tensor(0.0, device=device)
-        )
+        # ortho_loss = (
+        #     orthogonality_penalty(transformation.T) + orthogonality_penalty(transformation.T_)
+        #     if lambda_ortho > 0
+        #     else torch.tensor(0.0, device=device)
+        # )
 
-        loss = match_loss + lambda_sparse * sparse_loss + lambda_ortho * ortho_loss
+        loss = match_loss + lambda_sparse * sparse_loss # + lambda_ortho * ortho_loss
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -195,7 +195,7 @@ for epoch in range(num_epochs):
             "train/loss": float(loss.item()),
             "train/match_loss": float(match_loss.item()),
             "train/sparse_loss": float(sparse_loss.item()),
-            "train/ortho_loss": float(ortho_loss.item()),
+            # "train/ortho_loss": float(ortho_loss.item()),
             "train/epoch": epoch + 1,
         }
         run.log(metrics, step=global_step)
@@ -205,7 +205,6 @@ for epoch in range(num_epochs):
         running["loss"] += loss.item()
         running["match"] += match_loss.item()
         running["sparse"] += sparse_loss.item()
-        # running["inv"] += inv_loss.item()
         # running["ortho"] += float(ortho_loss.item())
         n_steps += 1
 
@@ -249,7 +248,6 @@ for epoch in range(num_epochs):
             "epoch/avg_loss": running["loss"],
             "epoch/avg_match_loss": running["match"],
             "epoch/avg_sparse_loss": running["sparse"],
-            # "epoch/avg_inv_loss": running["inv"],
             # "epoch/avg_ortho_loss": running["ortho"],
             "epoch/dev_mlm": dev_mlm,
             "epoch/dev_base_mlm": dev_base_MLM,
@@ -283,7 +281,6 @@ for epoch in range(num_epochs):
             "dataset_config": "wikitext-103-v1",
             "d": d,
             "lambda_sparse": lambda_sparse,
-            # "lambda_inv": lambda_inv,
             "lambda_ortho": lambda_ortho,
         },
     )
