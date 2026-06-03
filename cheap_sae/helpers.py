@@ -78,8 +78,8 @@ def _run_dev_eval(model, ds, batch_size, tokenizer, device, max_length) -> float
         # for sent in tokens:
         #     print()
         #     print(sent)
-        labels = batch['input_ids'].clone()
-        rand = torch.rand(batch['input_ids'].shape)
+        labels = batch['input_ids'].clone().to(device)
+        rand = torch.rand(batch['input_ids'].shape).to(device)
         mask_arr = (rand < 0.15) * (batch['input_ids'] != 101) * (batch['input_ids'] != 102) * (batch['input_ids'] != 0)
         labels[~mask_arr] = -100
         batch['input_ids'][mask_arr] = tokenizer.mask_token_id

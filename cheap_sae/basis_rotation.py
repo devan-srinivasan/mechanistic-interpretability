@@ -231,17 +231,21 @@ for epoch in range(num_epochs):
     # -------------------------
     # EVAL on dev set (validation)
     # -------------------------
-    transformation.eval()
-    model = BertForMaskedLM.from_pretrained("bert-base-cased").to(device)
-    model.eval()
+    try:
+        transformation.eval()
+        model = BertForMaskedLM.from_pretrained("bert-base-cased").to(device)
+        model.eval()
 
-    eval_handle = model.bert.encoder.layer[layer].attention.self.query.register_forward_hook(_eval_hook)
-    dev_mlm = _run_dev_eval(model, ds["validation"], batch_size, tokenizer, device, max_length)
-    eval_handle.remove()
+        eval_handle = model.bert.encoder.layer[layer].attention.self.query.register_forward_hook(_eval_hook)
+        dev_mlm = _run_dev_eval(model, ds["validation"], batch_size, tokenizer, device, max_length)
+        eval_handle.remove()
 
-    # If baseline not computed yet, run dev eval again WITHOUT the eval hook, store baseline, and log
-    if dev_base_MLM is None:
-        dev_base_MLM = _run_dev_eval(model, ds["validation"], batch_size, tokenizer, device, max_length)
+        # If baseline not computed yet, run dev eval again WITHOUT the eval hook, store baseline, and log
+        if dev_base_MLM is None:
+            dev_base_MLM = _run_dev_eval(model, ds["validation"], batch_size, tokenizer, device, max_length)
+    except Exception as e:
+        print(f"Error during dev evaluation: {e}")
+        dev_mlm = None
 
     run.log(
         {
