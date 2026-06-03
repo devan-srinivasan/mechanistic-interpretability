@@ -8,6 +8,7 @@ from datasets import load_dataset
 from tqdm import tqdm
 import wandb
 from dotenv import load_dotenv
+from helpers import token_batches, _run_dev_eval, Transformation
 
 # -------------------------
 # Setup
@@ -64,66 +65,14 @@ d_out, d_in = W.shape
 assert d_in == d_out, f"Expected square Q weight, got {W.shape}"
 d = d_in
 
-# -------------------------
-# Learn U, V so that:
-#   original:    Z = X W^T (+ b)
-#   transformed: Z' = (V X) (U W)^T (+ b')  where b' = U b
-#
-# We enforce functional equivalence by training:
-#   match:  (V X) (U W)^T + (U b)  ~=  X W^T + b
-# and sparsity penalty on:
-#   sparse: X (U W)^T
-# -------------------------
-
-class UVRotation(nn.Module):
-    def __init__(self, d: int, init: str = "rand", eye_noise: float = 1e-3):
-        super().__init__()
-        if init == "eye":
-            # Pure identity makes z_prime == z_orig exactly (and inv/ortho penalties minimal),
-            # so most losses/gradients start at or near zero; add tiny noise to break symmetry.
-            U0 = torch.eye(d) + eye_noise * torch.randn(d, d)
-            V0 = torch.eye(d) + eye_noise * torch.randn(d, d)
-        elif init == "rand":
-            U0 = torch.randn(d, d) * 0.01 + torch.eye(d)
-            V0 = torch.randn(d, d) * 0.01 + torch.eye(d)
-        else:
-            raise ValueError("init must be 'eye' or 'rand'")
-        self.U = nn.Parameter(U0)
-        self.V = nn.Parameter(V0)
-
-    def forward(self, X: torch.Tensor, W: torch.Tensor, b: torch.Tensor):
-        # X: [B, T, d]
-        # W: [d, d] (out, in)
-        UW = self.U @ W          # [d, d]
-        Vx = X @ self.V.T        # [B, T, d]  (row-vector convention)
-        z_prime = Vx @ UW.T      # [B, T, d]
-        b_prime = b @ self.U.T   # [d]
-        z_prime = z_prime + b_prime
-        z_orig = X @ W.T + b
-        sparse_term = X @ UW.T   # [B, T, d]
-        return z_prime, z_orig, sparse_term, UW
-
-uv = UVRotation(d=d, init="eye").to(device)
+transformation = Transformation(d=d, init="rand").to(device)
 
 # Loss weights
 lambda_sparse = 1   # increase to push more sparsity
 lambda_inv = 0.0      # encourages U,V to be inverses
 lambda_ortho = 0.0     # optional orthogonality regularizer
 
-optimizer = torch.optim.AdamW(uv.parameters(), lr=learning_rate)
-
-def token_batches(dataset_split, batch_size: int):
-    texts = dataset_split["text"]
-    for i in range(0, len(texts), batch_size):
-        batch_texts = texts[i : i + batch_size]
-        enc = tokenizer(
-            batch_texts,
-            padding=True,
-            truncation=True,
-            max_length=max_length,
-            return_tensors="pt",
-        )
-        yield {k: v.to(device) for k, v in enc.items()}
+optimizer = torch.optim.AdamW(transformation.parameters(), lr=learning_rate)
 
 def orthogonality_penalty(A: torch.Tensor):
     I = torch.eye(A.shape[0], device=A.device, dtype=A.dtype)
@@ -148,7 +97,7 @@ entity = os.environ.get("WANDB_ENTITY", None)
 run = wandb.init(
     project=project,
     entity=entity,
-    name=f"bert-qproj-uv-rot-layer{layer}",
+    name=f"bert-qproj-transformation-rot-layer{layer}",
     job_type="train",
 )
 
@@ -187,7 +136,7 @@ wandb_config = {
     "W_shape": tuple(W.shape),
     "b_shape": tuple(b.shape),
     # init
-    "uv_init": "eye",
+    "transformation_init": "rand",
 }
 run.config.update(wandb_config, allow_val_change=True)
 
@@ -202,11 +151,11 @@ global_step = 0
 dev_base_MLM = None
 
 for epoch in range(num_epochs):
-    uv.train()
+    transformation.train()
     running = {"loss": 0.0, "match": 0.0, "sparse": 0.0, "inv": 0.0, "ortho": 0.0}
     n_steps = 0
 
-    for batch in tqdm(token_batches(ds["train"], batch_size), desc=f"epoch {epoch+1}/{num_epochs} n_batches={len(ds['train'])//batch_size}"):
+    for batch in tqdm(token_batches(ds["train"], batch_size, tokenizer, device, max_length), desc=f"epoch {epoch+1}/{num_epochs} n_batches={len(ds['train'])//batch_size}"):
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
 
@@ -219,7 +168,7 @@ for epoch in range(num_epochs):
         Y = acts["y_out"]    # [B, T, d] output of q_linear, i.e. X @ W.T + b
 
         # Run our transformation model on the captured pair for reconstruction
-        z_prime, _, sparse_term, UW = uv(X, W, b)
+        z_prime, _, sparse_term = transformation(X, W, b)  # z_prime is (X @ (U W)^T @ T.T + b)
         z_orig = Y
 
         # 1) Functional match
@@ -230,11 +179,11 @@ for epoch in range(num_epochs):
 
         # # 3) Encourage V ~ U^{-1}
         # I = torch.eye(d, device=device)
-        # inv_loss = F.mse_loss(uv.V @ uv.U, I) + F.mse_loss(uv.U @ uv.V, I)
+        # inv_loss = ...
 
         # # 4) Optional orthogonality-ish
         # ortho_loss = (
-        #     orthogonality_penalty(uv.U) + orthogonality_penalty(uv.V)
+        #     orthogonality_penalty(transformation.T)
         #     if lambda_ortho > 0
         #     else torch.tensor(0.0, device=device)
         # )
@@ -275,6 +224,31 @@ for epoch in range(num_epochs):
     )
 
     # per-epoch logging (averages)
+
+    # EVAL
+
+    def _eval_hook(module, input, output):
+        X = input[0].detach()
+
+        z_prime, _, _ = transformation(X, W, b)
+
+        return z_prime.to(output.device)
+    
+    # -------------------------
+    # EVAL on dev set (validation)
+    # -------------------------
+    transformation.eval()
+    model = BertForMaskedLM.from_pretrained("bert-base-cased").to(device)
+    model.eval()
+
+    eval_handle = model.bert.encoder.layer[layer].attention.self.query.register_forward_hook(_eval_hook)
+    dev_mlm = _run_dev_eval(model, ds["validation"], batch_size, tokenizer, device, max_length)
+    eval_handle.remove()
+
+    # If baseline not computed yet, run dev eval again WITHOUT the eval hook, store baseline, and log
+    if dev_base_MLM is None:
+        dev_base_MLM = _run_dev_eval(model, ds["validation"], batch_size, tokenizer, device, max_length)
+
     run.log(
         {
             "epoch/avg_loss": running["loss"],
@@ -282,79 +256,31 @@ for epoch in range(num_epochs):
             "epoch/avg_sparse_loss": running["sparse"],
             # "epoch/avg_inv_loss": running["inv"],
             # "epoch/avg_ortho_loss": running["ortho"],
+            "epoch/dev_mlm": dev_mlm,
+            "epoch/dev_base_mlm": dev_base_MLM,
             "epoch": epoch + 1,
         },
         step=global_step,
     )
 
-    # EVAL
-
-    def _eval_hook(module, input, output):
-        X = input[0].detach()
-
-        z_prime, _, _, _ = uv(X, W, b)
-
-        return z_prime.to(output.device)
-    
-    eval_handle = module.register_forward_hook(_eval_hook)
-
-    # -------------------------
-    # EVAL on dev set (validation)
-    # -------------------------
-    uv.eval()
-    model = BertForMaskedLM.from_pretrained("bert-base-cased").to(device)
-    model.eval()
-    def _run_dev_eval(model) -> float:
-        """
-        Go through ds['validation'] and run model on it, and save the loss it outputs
-        """
-        total_loss = 0.0
-        n_batches = 0
-
-        for batch in tqdm(token_batches(ds["validation"], batch_size), desc="dev eval"):
-            input_ids = batch["input_ids"]
-            attention_mask = batch["attention_mask"]
-
-            with torch.no_grad():
-                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids)
-                loss = outputs.loss
-                total_loss += loss.item()
-                n_batches += 1
-
-        return total_loss, n_batches
-
-    eval_handle = model.bert.encoder.layer[layer].attention.self.query.register_forward_hook(_eval_hook)
-    dev_mlm = _run_dev_eval(model)
-    run.log({"eval/dev_mlm": dev_mlm}, step=global_step)
-    eval_handle.remove()
-
-    # If baseline not computed yet, run dev eval again WITHOUT the eval hook, store baseline, and log
-    if dev_base_MLM is None:
-        dev_base_MLM = _run_dev_eval(model)
-    run.log({"eval/dev_base_mlm": dev_base_MLM}, step=global_step)
-
     # -------------------------
     # Save + log learned transformed weights (U W)^T
     # -------------------------
-    uv.eval()
+    
     with torch.no_grad():
-        UW = (uv.U @ W).detach()          # [d, d]
-        transformed_W_T = UW.T            # (U W)^T
-
         save_obj = {
             "layer": layer,
-            "U": uv.U.detach().cpu(),
-            "V": uv.V.detach().cpu(),
+            "T": transformation.T.detach().cpu(),
             "wandb_config": dict(run.config),
         }
 
-        local_path = os.path.join(artifacts_dir, f"bert_qproj_layer{layer}_uv_rotation.pt")
+        local_path = os.path.join(artifacts_dir, f"bert_qproj_layer{layer}_transformation.pt")
         torch.save(save_obj, local_path)
 
     # log to wandb as an artifact as well
     artifact = wandb.Artifact(
-        name=f"bert_qproj_layer{layer}_uv_rotation",
-        type="uv_rotation",
+        name=f"bert_qproj_layer{layer}_transformation",
+        type="transformation",
         metadata={
             "layer": layer,
             "model_name": "bert-base-cased",
