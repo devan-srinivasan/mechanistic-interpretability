@@ -21,7 +21,7 @@ def parse_args():
     p.add_argument("--learning_rate", type=float, default=1e-3)
     p.add_argument("--num_epochs", type=int, default=5)
     p.add_argument("--max_length", type=int, default=128)
-    p.add_argument("--name", type=str, default=None, help="Name for this run (defaults to basis_rotation_layer{L}_lambda_sparse{lambda_sparse}_lambda_inv{lambda_inv})")
+    p.add_argument("--name", type=str, default=None, help="Name for this run (defaults to basis_rotation_layer{L}_lambda_sparse{lambda_sparse}_lambda_inv{lambda_inv})_lambda_rel_match{lambda_rel_match})")
 
     p.add_argument("--layer", type=int, default=6, help="0-indexed BERT layer")
 
@@ -294,6 +294,7 @@ for epoch in range(args.num_epochs):
             "d": d,
             "lambda_sparse": args.lambda_sparse,
             "lambda_inv": args.lambda_inv,
+            "lambda_rel_match": args.lambda_rel_match,
         },
     )
     artifact.add_file(local_path)
