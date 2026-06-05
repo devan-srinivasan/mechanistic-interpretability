@@ -9,18 +9,34 @@ from tqdm import tqdm
 import wandb
 from dotenv import load_dotenv
 from helpers import token_batches, _run_dev_eval, Transformation
+import argparse
 
 # -------------------------
 # Setup
 # -------------------------
-device = torch.device("cuda:7" if torch.cuda.is_available() else "cpu")
+def parse_args():
+    p = argparse.ArgumentParser(description="Train basis rotation Transformation on a BERT query projection.")
+    p.add_argument("--device", type=str, default=None, help='e.g. "cuda:6", "mps", or "cpu" (default: auto)')
+    p.add_argument("--batch_size", type=int, default=256)
+    p.add_argument("--learning_rate", type=float, default=1e-3)
+    p.add_argument("--num_epochs", type=int, default=5)
+    p.add_argument("--max_length", type=int, default=128)
+
+    p.add_argument("--layer", type=int, default=6, help="0-indexed BERT layer")
+
+    p.add_argument("--lambda_sparse", type=float, default=1.0)
+    p.add_argument("--lambda_ortho", type=float, default=1.0)
+    return p.parse_args()
+
+args = parse_args()
+
 torch.set_float32_matmul_precision("high")
 
 tokenizer = BertTokenizer.from_pretrained("bert-base-cased")
 
 cfg = BertConfig.from_pretrained("bert-base-cased")
 cfg._attn_implementation = "eager"
-model = BertModel.from_pretrained("bert-base-cased", config=cfg).to(device)
+model = BertModel.from_pretrained("bert-base-cased", config=cfg).to(args.device)
 model.eval()  # we'll freeze BERT
 
 for p in model.parameters():
@@ -31,23 +47,17 @@ ds = load_dataset("Salesforce/wikitext", "wikitext-103-v1")
 # clean ds a bit
 ds = ds.filter(lambda x: len(x["text"].split()) > 5 and not x["text"].startswith(" = "))
 
-batch_size = 256
-learning_rate = 1e-3
-num_epochs = 5
-max_length = 128
-
 # For local testing
 if torch.mps.is_available():
     ds['train'] = ds['train'].shuffle(seed=42).select(range(64))
     ds['validation'] = ds['validation'].shuffle(seed=42).select(range(16))
-    batch_size = 4
+    args.batch_size = 4
 
 # -------------------------
 # Target: query projection at layer L
 # -------------------------
-layer: int = 6  # <- integer variable as requested (0-indexed layer)
 
-bert_layer = model.encoder.layer[layer]
+bert_layer = model.encoder.layer[args.layer]
 module = bert_layer.attention.self.query  # nn.Linear(hidden_size, all_head_size)
 W = module.weight.detach()                # [out_dim, in_dim] = [hidden, hidden] for BERT
 b = module.bias.detach()                  # [out_dim]
@@ -65,14 +75,9 @@ d_out, d_in = W.shape
 assert d_in == d_out, f"Expected square Q weight, got {W.shape}"
 d = d_in
 
-transformation = Transformation(d=d, init="rand").to(device)
+transformation = Transformation(d=d, init="rand").to(args.device)
 
-# Loss weights
-lambda_sparse = 1.0   # increase to push more sparsity
-lambda_inv = 0.0      # encourages U,V to be inverses
-lambda_ortho = 1.0     # optional orthogonality regularizer
-
-optimizer = torch.optim.AdamW(transformation.parameters(), lr=learning_rate)
+optimizer = torch.optim.AdamW(transformation.parameters(), lr=args.learning_rate)
 
 def orthogonality_penalty(A: torch.Tensor):
     I = torch.eye(A.shape[0], device=A.device, dtype=A.dtype)
@@ -97,7 +102,7 @@ entity = os.environ.get("WANDB_ENTITY", None)
 run = wandb.init(
     project=project,
     entity=entity,
-    name=f"bert-qproj-transformation-rot-layer{layer}",
+    name=f"bert-qproj-transformation-rot-layer{args.layer}",
     job_type="train",
 )
 
@@ -115,22 +120,22 @@ wandb_config = {
     "dataset_split": "train",
     "dataset_filter_min_words": 6,
     "dataset_filter_not_startswith": " = ",
-    "layer": layer,
+    "layer": args.layer,
     "attn_implementation": getattr(cfg, "_attn_implementation", None),
-    "device": str(device),
+    "device": str(args.device),
     "torch_version": torch.__version__,
     "transformers_version": __import__("transformers").__version__,
     "datasets_version": __import__("datasets").__version__,
     # training
-    "batch_size": batch_size,
-    "learning_rate": learning_rate,
-    "num_epochs": num_epochs,
-    "max_length": max_length,
+    "batch_size": args.batch_size,
+    "learning_rate": args.learning_rate,
+    "num_epochs": args.num_epochs,
+    "max_length": args.max_length,
     "optimizer": "AdamW",
     # objective weights
-    "lambda_sparse": lambda_sparse,
+    "lambda_sparse": args.lambda_sparse,
     # "lambda_inv": lambda_inv,
-    "lambda_ortho": lambda_ortho,
+    "lambda_ortho": args.lambda_ortho,
     # dimensions
     "d": d,
     "W_shape": tuple(W.shape),
@@ -150,12 +155,12 @@ global_step = 0
 
 dev_base_MLM = None
 
-for epoch in range(num_epochs):
+for epoch in range(args.num_epochs):
     transformation.train()
     running = {"loss": 0.0, "match": 0.0, "sparse": 0.0, "inv": 0.0, "ortho": 0.0}
     n_steps = 0
 
-    for batch in tqdm(token_batches(ds["train"], batch_size, tokenizer, device, max_length), desc=f"epoch {epoch+1}/{num_epochs} n_batches={len(ds['train'])//batch_size}"):
+    for batch in tqdm(token_batches(ds["train"], args.batch_size, tokenizer, args.device, args.max_length), desc=f"epoch {epoch+1}/{args.num_epochs} n_batches={len(ds['train'])//args.batch_size}"):
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
 
@@ -166,6 +171,7 @@ for epoch in range(num_epochs):
 
         X = acts["x_in"]     # [B, T, d] input to q_linear
         Y = acts["y_out"]    # [B, T, d] output of q_linear, i.e. X @ W.T + b
+        acts = {}  # clear for next step
 
         # Run our transformation model on the captured pair for reconstruction
         z_prime, _, sparse_term = transformation(X, W, b)  # z_prime is (X @ (U W)^T @ T_^T + b)
@@ -184,7 +190,7 @@ for epoch in range(num_epochs):
         #     else torch.tensor(0.0, device=device)
         # )
 
-        loss = match_loss + lambda_sparse * sparse_loss # + lambda_ortho * ortho_loss
+        loss = match_loss + args.lambda_sparse * sparse_loss # + lambda_ortho * ortho_loss
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -226,23 +232,23 @@ for epoch in range(num_epochs):
 
         z_prime, _, _ = transformation(X, W, b)
 
-        return z_prime.to(output.device)
+        return z_prime.to(output.args.device)
     
     # -------------------------
     # EVAL on dev set (validation)
     # -------------------------
     try:
         transformation.eval()
-        model = BertForMaskedLM.from_pretrained("bert-base-cased").to(device)
-        model.eval()
+        mlm_model = BertForMaskedLM.from_pretrained("bert-base-cased").to(args.device)
+        mlm_model.eval()
 
-        eval_handle = model.bert.encoder.layer[layer].attention.self.query.register_forward_hook(_eval_hook)
-        dev_mlm = _run_dev_eval(model, ds["validation"], batch_size, tokenizer, device, max_length)
+        eval_handle = mlm_model.bert.encoder.layer[args.layer].attention.self.query.register_forward_hook(_eval_hook)
+        dev_mlm = _run_dev_eval(mlm_model, ds["validation"], args.batch_size, tokenizer, args.device, args.max_length)
         eval_handle.remove()
 
         # If baseline not computed yet, run dev eval again WITHOUT the eval hook, store baseline, and log
         if dev_base_MLM is None:
-            dev_base_MLM = _run_dev_eval(model, ds["validation"], batch_size, tokenizer, device, max_length)
+            dev_base_MLM = _run_dev_eval(mlm_model, ds["validation"], args.batch_size, tokenizer, args.device, args.max_length)
     except Exception as e:
         print(f"Error during dev evaluation: {e}")
         dev_mlm = None
@@ -266,27 +272,27 @@ for epoch in range(num_epochs):
     
     with torch.no_grad():
         save_obj = {
-            "layer": layer,
+            "layer": args.layer,
             "T": transformation.T.detach().cpu(),
             "T_": transformation.T_.detach().cpu(),
             "wandb_config": dict(run.config),
         }
 
-        local_path = os.path.join(artifacts_dir, f"bert_qproj_layer{layer}_transformation.pt")
+        local_path = os.path.join(artifacts_dir, f"bert_qproj_layer{args.layer}_transformation.pt")
         torch.save(save_obj, local_path)
 
     # log to wandb as an artifact as well
     artifact = wandb.Artifact(
-        name=f"bert_qproj_layer{layer}_transformation",
+        name=f"bert_qproj_layer{args.layer}_transformation",
         type="transformation",
         metadata={
-            "layer": layer,
+            "layer": args.layer,
             "model_name": "bert-base-cased",
             "dataset_name": "Salesforce/wikitext",
             "dataset_config": "wikitext-103-v1",
             "d": d,
-            "lambda_sparse": lambda_sparse,
-            "lambda_ortho": lambda_ortho,
+            "lambda_sparse": args.lambda_sparse,
+            "lambda_ortho": args.lambda_ortho,
         },
     )
     artifact.add_file(local_path)
