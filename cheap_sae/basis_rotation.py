@@ -21,6 +21,7 @@ def parse_args():
     p.add_argument("--learning_rate", type=float, default=1e-3)
     p.add_argument("--num_epochs", type=int, default=5)
     p.add_argument("--max_length", type=int, default=128)
+    p.add_argument("--name", type=str, default=None, help="Name for this run (defaults to basis_rotation_layer{L}_lambda_sparse{lambda_sparse}_lambda_inv{lambda_inv})")
 
     p.add_argument("--layer", type=int, default=6, help="0-indexed BERT layer")
 
@@ -95,12 +96,13 @@ if not os.environ.get("WANDB_API_KEY"):
 project = os.environ.get("WANDB_PROJECT", "cheap-sae")
 entity = os.environ.get("WANDB_ENTITY", None)
 
-name = f"bert_qproj_layer{args.layer}_transformation_joint"
+if not args.name:
+    args.name = f"bert_qproj_layer{args.layer}_transformation_joint"
 
 run = wandb.init(
     project=project,
     entity=entity,
-    name=name,
+    name=args.name,
     job_type="train",
 )
 
@@ -276,12 +278,12 @@ for epoch in range(args.num_epochs):
             "wandb_config": dict(run.config),
         }
 
-        local_path = os.path.join(artifacts_dir, f"{name}.pt")
+        local_path = os.path.join(artifacts_dir, f"{args.name}.pt")
         torch.save(save_obj, local_path)
 
     # log to wandb as an artifact as well
     artifact = wandb.Artifact(
-        name=name,
+        name=args.name,
         type="transformation",
         metadata={
             "layer": args.layer,
