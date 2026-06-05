@@ -25,7 +25,7 @@ def parse_args():
     p.add_argument("--layer", type=int, default=6, help="0-indexed BERT layer")
 
     p.add_argument("--lambda_sparse", type=float, default=1.0)
-    p.add_argument("--lambda_ortho", type=float, default=1.0)
+    p.add_argument("--lambda_inv", type=float, default=1.0)
     return p.parse_args()
 
 args = parse_args()
@@ -79,10 +79,6 @@ transformation = Transformation(d=d, init="rand").to(args.device)
 
 optimizer = torch.optim.AdamW(transformation.parameters(), lr=args.learning_rate)
 
-def orthogonality_penalty(A: torch.Tensor):
-    I = torch.eye(A.shape[0], device=A.device, dtype=A.dtype)
-    return ((A @ A.T - I) ** 2).mean()
-
 # -------------------------
 # Weights & Biases logging
 # -------------------------
@@ -135,7 +131,7 @@ wandb_config = {
     # objective weights
     "lambda_sparse": args.lambda_sparse,
     # "lambda_inv": lambda_inv,
-    "lambda_ortho": args.lambda_ortho,
+    "lambda_inv": args.lambda_inv,
     # dimensions
     "d": d,
     "W_shape": tuple(W.shape),
@@ -157,7 +153,7 @@ dev_base_MLM = None
 
 for epoch in range(args.num_epochs):
     transformation.train()
-    running = {"loss": 0.0, "match": 0.0, "sparse": 0.0, "inv": 0.0, "ortho": 0.0}
+    running = {"loss": 0.0, "match": 0.0, "sparse": 0.0, "inv": 0.0, "inv": 0.0}
     n_steps = 0
 
     for batch in tqdm(token_batches(ds["train"], args.batch_size, tokenizer, args.device, args.max_length), desc=f"epoch {epoch+1}/{args.num_epochs} n_batches={len(ds['train'])//args.batch_size}"):
@@ -179,18 +175,15 @@ for epoch in range(args.num_epochs):
 
         # 1) Functional match
         match_loss = F.mse_loss(z_prime, z_orig)
+        rel_match_loss = torch.norm(z_prime - z_orig) / torch.norm(z_orig)  # MSE + relative error, to encourage both absolute and relative closeness
 
         # 2) Sparsity on X (U W)^T
         sparse_loss = sparse_term.abs().mean()
 
-        # 3) Optional orthogonality-ish
-        # ortho_loss = (
-        #     orthogonality_penalty(transformation.T) + orthogonality_penalty(transformation.T_)
-        #     if lambda_ortho > 0
-        #     else torch.tensor(0.0, device=device)
-        # )
+        # 3) Optional invertibility loss
+        inv_loss = F.mse_loss(transformation.T.T @ transformation.T_, torch.eye(d, device=transformation.T.device))
 
-        loss = match_loss + args.lambda_sparse * sparse_loss # + lambda_ortho * ortho_loss
+        loss = match_loss + rel_match_loss + args.lambda_sparse * sparse_loss + args.lambda_inv * inv_loss
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -200,8 +193,9 @@ for epoch in range(args.num_epochs):
         metrics = {
             "train/loss": float(loss.item()),
             "train/match_loss": float(match_loss.item()),
+            "train/rel_match_loss": float(rel_match_loss.item()),
             "train/sparse_loss": float(sparse_loss.item()),
-            # "train/ortho_loss": float(ortho_loss.item()),
+            "train/inv_loss": float(inv_loss.item()),
             "train/epoch": epoch + 1,
         }
         run.log(metrics, step=global_step)
@@ -210,8 +204,9 @@ for epoch in range(args.num_epochs):
         # epoch running averages
         running["loss"] += loss.item()
         running["match"] += match_loss.item()
+        running["rel_match"] += rel_match_loss.item()
         running["sparse"] += sparse_loss.item()
-        # running["ortho"] += float(ortho_loss.item())
+        running["inv"] += float(inv_loss.item())
         n_steps += 1
 
     for k in running:
@@ -219,8 +214,8 @@ for epoch in range(args.num_epochs):
 
     print(
         f"epoch {epoch+1}: "
-        f"loss={running['loss']:.6f} match={running['match']:.6f} "
-        f"sparse={running['sparse']:.6f}" # inv={running['inv']:.6f}"
+        f"loss={running['loss']:.6f} match={running['match']:.6f} rel_match={running['rel_match']:.6f} "
+        f"sparse={running['sparse']:.6f} inv={running['inv']:.6f}"
     )
 
     # per-epoch logging (averages)
@@ -257,8 +252,9 @@ for epoch in range(args.num_epochs):
         {
             "epoch/avg_loss": running["loss"],
             "epoch/avg_match_loss": running["match"],
+            "epoch/avg_rel_match_loss": running["rel_match"],
             "epoch/avg_sparse_loss": running["sparse"],
-            # "epoch/avg_ortho_loss": running["ortho"],
+            "epoch/avg_inv_loss": running["inv"],
             "epoch/dev_mlm": dev_mlm,
             "epoch/dev_base_mlm": dev_base_MLM,
             "epoch": epoch + 1,
@@ -292,7 +288,7 @@ for epoch in range(args.num_epochs):
             "dataset_config": "wikitext-103-v1",
             "d": d,
             "lambda_sparse": args.lambda_sparse,
-            "lambda_ortho": args.lambda_ortho,
+            "lambda_inv": args.lambda_inv,
         },
     )
     artifact.add_file(local_path)

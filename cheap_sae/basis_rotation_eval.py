@@ -16,7 +16,7 @@ cfg._attn_implementation = "eager"
 model = BertForMaskedLM.from_pretrained("bert-base-cased", config=cfg)
 model.eval()  # we'll freeze BERT
 
-layer = 6
+layer = 11
 max_length = 128
 batch_size = 128
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -31,8 +31,8 @@ ds = ds.filter(lambda x: len(x["text"].split()) > 5 and not x["text"].startswith
 if torch.mps.is_available():
     ds['train'] = ds['train'].shuffle(seed=42).select(range(64))
     # ds['validation'] = ds['validation'].shuffle(seed=42).select(range(500))
-    
-save_obj = torch.load("cheap_sae/artifacts/bert_qproj_layer6_transformation.pt", map_location="cpu")
+
+save_obj = torch.load(f"cheap_sae/artifacts/bert_qproj_layer{layer}_transformation.pt", map_location="cpu")
 
 # load the model here
 transformation = Transformation(d=W.shape[0], init="rand").to(device)
@@ -50,47 +50,19 @@ def _eval_hook(module, input, output):
 
     activation_indices.extend(sparse_term.detach().cpu())
 
-    # active_mask = sparse_term.abs() > 0.2  # (B, N, d)
-
-    # B, N, d = sparse_term.shape
-    # K = 50
-
-    # abs_vals = sparse_term.abs()
-    # masked_abs = abs_vals.masked_fill(~active_mask, float("-inf"))  # ignore inactive
-
-    # topk_vals, topk_idx = torch.topk(masked_abs, k=K, dim=-1, largest=True, sorted=False)  # (B, N, K)
-    # topk_raw_vals = sparse_term.gather(-1, topk_idx)  # signed values, (B, N, K)
-
-    # # K is an upper bound: keep only truly-active entries, pad the rest.
-    # # Convert the (possibly -inf) masked top-k scores into a validity mask.
-    # valid = torch.isfinite(topk_vals)  # (B, N, K)
-
-    # # Move valid entries to the front (stable w.r.t. current topk order), pad the rest.
-    # order = valid.to(torch.int64).argsort(dim=-1, descending=True)  # valid first
-    # topk_idx = topk_idx.gather(-1, order)
-    # topk_raw_vals = topk_raw_vals.gather(-1, order)
-
-    # # Pad invalid tail with (-1, 0.0)
-    # valid_sorted = valid.gather(-1, order)
-    # topk_idx = topk_idx.masked_fill(~valid_sorted, -1)
-    # topk_raw_vals = topk_raw_vals.masked_fill(~valid_sorted, 0.0)
-
-    # feature_indices = torch.stack(
-    #     (topk_idx.to(topk_raw_vals.dtype), topk_raw_vals),
-    #     dim=-1,
-    # )  # (B, N, K, 2)
-
-    # activation_indices.extend(feature_indices)
-
     return z_prime.to(output.device)
 
-# uv.eval() # TODO traditionally eval the model here
+transformation.eval()
 model.eval()
 
 # base_total_loss, n_base_masked = _run_dev_eval(model, ds["validation"], batch_size, tokenizer, device, max_length)
+
+# print(f"Baseline MLM loss: {(base_total_loss / n_base_masked):.4f}")
+
 eval_handle = model.bert.encoder.layer[layer].attention.self.query.register_forward_hook(_eval_hook)
 new_total_loss, n_new_masked = _run_dev_eval(model, ds["validation"], batch_size, tokenizer, device, max_length)
 eval_handle.remove()
+print(f"MLM loss with Transformation: {(new_total_loss / n_new_masked):.4f}")
 
 # activation_indices is a list of tensors shaped (B, 128, K, 2); concatenate across batches (dim=0)
 # activation_indices_cat = torch.cat(
@@ -104,7 +76,7 @@ activation_indices_cat = torch.cat(
 )  # -> (sum_B, 128, d)
 print(activation_indices_cat.shape)
 
-save_dir = os.path.join("cheap_sae", "features", f"layer{layer}_qrot")
+save_dir = os.path.join("cheap_sae", "features", f"layer{layer}_T")
 os.makedirs(save_dir, exist_ok=True)
 
 save_path = os.path.join(save_dir, "activations.pt")
@@ -123,6 +95,3 @@ with open(tokens_path, "w", encoding="utf-8") as f:
     json.dump(all_tokens, f, ensure_ascii=False)
 
 print(f"Saved tokens to: {tokens_path}")
-
-# print(f"Baseline MLM loss: {(base_total_loss / n_base_masked):.4f}")
-print(f"MLM loss with UV rotation: {(new_total_loss / n_new_masked):.4f}")

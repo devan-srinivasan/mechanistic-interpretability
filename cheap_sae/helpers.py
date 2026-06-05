@@ -29,10 +29,6 @@ class Transformation(nn.Module):
         self.T_ = nn.Parameter(T_)
 
     def forward(self, X: torch.Tensor, W: torch.Tensor, b: torch.Tensor):
-        """
-        Normal: WX + b = X @ W.T + b
-        Transformed: (X (T W) + b)
-        """
         # X: [B, T, d]
         # W: [d, d] (out, in)
         TW = self.T @ W
