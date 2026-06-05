@@ -95,10 +95,12 @@ if not os.environ.get("WANDB_API_KEY"):
 project = os.environ.get("WANDB_PROJECT", "cheap-sae")
 entity = os.environ.get("WANDB_ENTITY", None)
 
+name = f"bert_qproj_layer{args.layer}_transformation_joint"
+
 run = wandb.init(
     project=project,
     entity=entity,
-    name=f"bert-qproj-transformation-rot-layer{args.layer}",
+    name=name,
     job_type="train",
 )
 
@@ -274,12 +276,12 @@ for epoch in range(args.num_epochs):
             "wandb_config": dict(run.config),
         }
 
-        local_path = os.path.join(artifacts_dir, f"bert_qproj_layer{args.layer}_transformation.pt")
+        local_path = os.path.join(artifacts_dir, f"{name}.pt")
         torch.save(save_obj, local_path)
 
     # log to wandb as an artifact as well
     artifact = wandb.Artifact(
-        name=f"bert_qproj_layer{args.layer}_transformation",
+        name=name,
         type="transformation",
         metadata={
             "layer": args.layer,
