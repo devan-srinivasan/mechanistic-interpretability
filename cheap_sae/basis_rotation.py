@@ -268,6 +268,7 @@ for epoch in range(num_epochs):
         save_obj = {
             "layer": layer,
             "T": transformation.T.detach().cpu(),
+            "T_": transformation.T_.detach().cpu(),
             "wandb_config": dict(run.config),
         }
 

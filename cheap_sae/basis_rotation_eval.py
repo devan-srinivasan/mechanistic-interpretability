@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import BertModel, BertTokenizer, BertConfig, BertForMaskedLM
 from datasets import load_dataset
-from helpers import token_batches, _run_dev_eval
+from helpers import token_batches, _run_dev_eval, Transformation
 import json
 
 tokenizer = BertTokenizer.from_pretrained("bert-base-cased")
@@ -32,15 +32,13 @@ if torch.mps.is_available():
     ds['train'] = ds['train'].shuffle(seed=42).select(range(64))
     # ds['validation'] = ds['validation'].shuffle(seed=42).select(range(500))
     
-# Load a previously-saved UVRotation (U, V) and construct the module from it
-ckpt_path = os.path.join("cheap_sae/artifacts/", f"bert_qproj_layer{layer}_uv_rotation.pt")
-save_obj = torch.load(ckpt_path, map_location="cpu")
+save_obj = torch.load("cheap_sae/artifacts/bert_qproj_layer6_transformation.pt", map_location="cpu")
 
-# TODO traditionally load the model here
+# load the model here
+transformation = Transformation(d=W.shape[0], init="rand").to(device)
 with torch.no_grad():
-    U = save_obj["U"].to(device, dtype=torch.float32)
-    V = save_obj["V"].to(device, dtype=torch.float32)
-
+    transformation.T.copy_(save_obj["T"].to(device))
+    transformation.T_.copy_(save_obj["T_"].to(device))
 
 activation_indices = []
 
@@ -48,9 +46,7 @@ def _eval_hook(module, input, output):
     global activation_indices
     X = input[0].detach()
 
-    # TODO traditionally run the model here
-    sparse_term = X @ (U @ W).T
-    z_prime = sparse_term @ V.T + b @ U.T
+    z_prime, z_orig, sparse_term = transformation(X, W.to(device), b.to(device))
 
     activation_indices.extend(sparse_term.detach().cpu())
 
