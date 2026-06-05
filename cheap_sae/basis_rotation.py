@@ -153,7 +153,7 @@ dev_base_MLM = None
 
 for epoch in range(args.num_epochs):
     transformation.train()
-    running = {"loss": 0.0, "match": 0.0, "sparse": 0.0, "inv": 0.0, "inv": 0.0}
+    running = {"loss": 0.0, "match": 0.0, "sparse": 0.0, "inv": 0.0, "rel_match": 0.0}
     n_steps = 0
 
     for batch in tqdm(token_batches(ds["train"], args.batch_size, tokenizer, args.device, args.max_length), desc=f"epoch {epoch+1}/{args.num_epochs} n_batches={len(ds['train'])//args.batch_size}"):
