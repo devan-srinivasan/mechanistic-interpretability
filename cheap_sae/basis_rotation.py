@@ -98,7 +98,7 @@ project = os.environ.get("WANDB_PROJECT", "cheap-sae")
 entity = os.environ.get("WANDB_ENTITY", None)
 
 if not args.name:
-    args.name = f"bert_qproj_layer{args.layer}_transformation_joint"
+    args.name = f"bert_qproj_layer{args.layer}_transformation_lambda_sparse{args.lambda_sparse}_lambda_inv{args.lambda_inv}_lambda_rel_match{args.lambda_rel_match}"
 
 run = wandb.init(
     project=project,
