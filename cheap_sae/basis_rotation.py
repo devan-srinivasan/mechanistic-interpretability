@@ -27,6 +27,7 @@ def parse_args():
 
     p.add_argument("--lambda_sparse", type=float, default=1.0)
     p.add_argument("--lambda_inv", type=float, default=1.0)
+    p.add_argument("--lambda_rel_match", type=float, default=1.0)
     return p.parse_args()
 
 args = parse_args()
@@ -134,8 +135,8 @@ wandb_config = {
     "optimizer": "AdamW",
     # objective weights
     "lambda_sparse": args.lambda_sparse,
-    # "lambda_inv": lambda_inv,
     "lambda_inv": args.lambda_inv,
+    "lambda_rel_match": args.lambda_rel_match,
     # dimensions
     "d": d,
     "W_shape": tuple(W.shape),
@@ -187,7 +188,7 @@ for epoch in range(args.num_epochs):
         # 3) Optional invertibility loss
         inv_loss = F.mse_loss(transformation.T.T @ transformation.T_, torch.eye(d, device=transformation.T.device))
 
-        loss = match_loss + rel_match_loss + args.lambda_sparse * sparse_loss + args.lambda_inv * inv_loss
+        loss = match_loss + args.lambda_rel_match * rel_match_loss + args.lambda_sparse * sparse_loss + args.lambda_inv * inv_loss
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
