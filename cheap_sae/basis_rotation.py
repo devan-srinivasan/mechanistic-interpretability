@@ -15,7 +15,7 @@ import argparse
 # Setup
 # -------------------------
 def parse_args():
-    p = argparse.ArgumentParser(description="Train basis rotation Transformation on a BERT query projection.")
+    p = argparse.ArgumentParser(description="Train basis rotation Transformation on a BERT projection.")
     p.add_argument("--device", type=str, default=None, help='e.g. "cuda:6", "mps", or "cpu" (default: auto)')
     p.add_argument("--batch_size", type=int, default=256)
     p.add_argument("--learning_rate", type=float, default=1e-3)
@@ -56,11 +56,11 @@ if torch.mps.is_available():
     args.batch_size = 4
 
 # -------------------------
-# Target: query projection at layer L
+# Target: some projection at layer L
 # -------------------------
 
 bert_layer = model.encoder.layer[args.layer]
-module = bert_layer.attention.self.query  # nn.Linear(hidden_size, all_head_size)
+module = bert_layer.attention.self.key  # nn.Linear(hidden_size, all_head_size)
 W = module.weight.detach()                # [out_dim, in_dim] = [hidden, hidden] for BERT
 b = module.bias.detach()                  # [out_dim]
 
@@ -98,7 +98,7 @@ project = os.environ.get("WANDB_PROJECT", "cheap-sae")
 entity = os.environ.get("WANDB_ENTITY", None)
 
 if not args.name:
-    args.name = f"bert_qproj_layer{args.layer}_transformation_lambda_sparse{args.lambda_sparse}_lambda_inv{args.lambda_inv}_lambda_rel_match{args.lambda_rel_match}"
+    args.name = f"bert_kproj_layer{args.layer}_transformation_lambda_sparse{args.lambda_sparse}_lambda_inv{args.lambda_inv}_lambda_rel_match{args.lambda_rel_match}"
 
 run = wandb.init(
     project=project,
@@ -232,7 +232,7 @@ for epoch in range(args.num_epochs):
 
         z_prime, _, _ = transformation(X, W, b)
 
-        return z_prime.to(output.args.device)
+        return z_prime.to(output.device)
     
     # -------------------------
     # EVAL on dev set (validation)
@@ -242,7 +242,7 @@ for epoch in range(args.num_epochs):
         mlm_model = BertForMaskedLM.from_pretrained("bert-base-cased").to(args.device)
         mlm_model.eval()
 
-        eval_handle = mlm_model.bert.encoder.layer[args.layer].attention.self.query.register_forward_hook(_eval_hook)
+        eval_handle = mlm_model.bert.encoder.layer[args.layer].attention.self.key.register_forward_hook(_eval_hook)
         dev_mlm = _run_dev_eval(mlm_model, ds["validation"], args.batch_size, tokenizer, args.device, args.max_length)
         eval_handle.remove()
 
