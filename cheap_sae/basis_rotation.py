@@ -60,7 +60,7 @@ if torch.mps.is_available():
 # -------------------------
 
 bert_layer = model.encoder.layer[args.layer]
-module = bert_layer.attention.self.value  # nn.Linear(hidden_size, all_head_size)
+module = bert_layer.attention.output.dense  # nn.Linear(hidden_size, all_head_size)
 W = module.weight.detach()                # [out_dim, in_dim] = [hidden, hidden] for BERT
 b = module.bias.detach()                  # [out_dim]
 
@@ -98,7 +98,7 @@ project = os.environ.get("WANDB_PROJECT", "cheap-sae")
 entity = os.environ.get("WANDB_ENTITY", None)
 
 if not args.name:
-    args.name = f"bert_vproj_layer{args.layer}_transformation_lambda_sparse{args.lambda_sparse}_lambda_inv{args.lambda_inv}_lambda_rel_match{args.lambda_rel_match}"
+    args.name = f"bert_oproj_layer{args.layer}_transformation_lambda_sparse{args.lambda_sparse}_lambda_inv{args.lambda_inv}_lambda_rel_match{args.lambda_rel_match}"
 
 run = wandb.init(
     project=project,
@@ -242,7 +242,7 @@ for epoch in range(args.num_epochs):
         mlm_model = BertForMaskedLM.from_pretrained("bert-base-cased").to(args.device)
         mlm_model.eval()
 
-        eval_handle = mlm_model.bert.encoder.layer[args.layer].attention.self.value.register_forward_hook(_eval_hook)
+        eval_handle = mlm_model.bert.encoder.layer[args.layer].attention.output.dense.register_forward_hook(_eval_hook)
         dev_mlm = _run_dev_eval(mlm_model, ds["validation"], args.batch_size, tokenizer, args.device, args.max_length)
         eval_handle.remove()
 
