@@ -83,7 +83,6 @@ def _run_dev_eval(model, ds, batch_size, tokenizer, device, max_length) -> float
         with torch.no_grad():
             outputs = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'], labels=labels)
             batch_loss = outputs.loss.item()
-            total_loss += batch_loss
             n_batches += 1
 
         n_masked = mask_arr.sum().item()

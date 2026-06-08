@@ -55,9 +55,9 @@ def _eval_hook(module, input, output):
 transformation.eval()
 model.eval()
 
-# base_total_loss, n_base_masked = _run_dev_eval(model, ds["validation"], batch_size, tokenizer, device, max_length)
+base_total_loss, n_base_masked = _run_dev_eval(model, ds["validation"], batch_size, tokenizer, device, max_length)
 
-# print(f"Baseline MLM loss: {(base_total_loss / n_base_masked):.4f}")
+print(f"Baseline MLM loss: {(base_total_loss / n_base_masked):.4f}")
 
 eval_handle = model.bert.encoder.layer[layer].attention.self.query.register_forward_hook(_eval_hook)
 new_total_loss, n_new_masked = _run_dev_eval(model, ds["validation"], batch_size, tokenizer, device, max_length)
