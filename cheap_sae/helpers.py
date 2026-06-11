@@ -37,6 +37,26 @@ class Transformation(nn.Module):
         z_orig = X @ W.T + b # [B, T, d]
         return z_recon, z_orig, sparse_term
 
+class SAE(nn.Module):
+    def __init__(self, d: int, init: str = "rand", eye_noise: float = 1e-3):
+        super().__init__()
+        if init == "eye":
+            # Pure identity makes z_prime == z_orig exactly (and inv/ortho penalties minimal),
+            # so most losses/gradients start at or near zero; add tiny noise to break symmetry.
+            U = torch.eye(d) + eye_noise * torch.randn(d, d)
+            S = torch.eye(d) + eye_noise * torch.randn(d, d)
+        elif init == "rand":
+            U = torch.randn(d, d) * 0.01 + torch.eye(d)
+            S = torch.randn(d, d) * 0.01 + torch.eye(d)
+        else:
+            raise ValueError("init must be 'eye' or 'rand'")
+        self.U = nn.Parameter(U)
+        self.S = nn.Parameter(S)
+
+    def forward(self, X: torch.Tensor):
+        sparse_term = X @ self.U.T
+        recon = sparse_term @ self.S.T
+        return recon, sparse_term
 
 def token_batches(dataset_split, batch_size: int, tokenizer, device, max_length):
     texts = dataset_split["text"]
