@@ -60,7 +60,7 @@ if torch.mps.is_available():
 # -------------------------
 
 bert_layer = model.encoder.layer[args.layer]
-module = bert_layer.attention.output.dense  # nn.Linear(hidden_size, all_head_size)
+module = bert_layer.attention.self.query  # nn.Linear(hidden_size, all_head_size)
 W = module.weight.detach()                # [out_dim, in_dim] = [hidden, hidden] for BERT
 b = module.bias.detach()                  # [out_dim]
 
