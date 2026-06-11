@@ -23,6 +23,8 @@ bert_tokenizer = BertTokenizer.from_pretrained("bert-base-cased")
 
 cfg = BertConfig.from_pretrained("bert-base-cased")
 cfg._attn_implementation = "eager"
+cfg.output_hidden_states = True
+cfg.output_attentions = True
 
 bert_model = BertForMaskedLM.from_pretrained("bert-base-cased", config=cfg)
 bert_model.eval() 
@@ -31,63 +33,69 @@ bert_model.eval()
 ds = load_dataset("Salesforce/wikitext", "wikitext-103-v1")
 ds = ds.filter(lambda x: len(x["text"].split()) > 5 and not x["text"].startswith(" = "))
 
-module = bert_model.bert.encoder.layer[11].attention
+attn_module = bert_model.bert.encoder.layer[11].attention
+intermediate_module = bert_model.bert.encoder.layer[11].intermediate
+output_module = bert_model.bert.encoder.layer[11].output
 
-Q_W, Q_b = module.self.query.weight.detach(), module.self.query.bias.detach()
-K_W, K_b = module.self.key.weight.detach(), module.self.key.bias.detach()
-V_W, V_b = module.self.value.weight.detach(), module.self.value.bias.detach()
-O_W, O_b = module.output.dense.weight.detach(), module.output.dense.bias.detach()
+Q_W, Q_b = attn_module.self.query.weight.detach(), attn_module.self.query.bias.detach()
+K_W, K_b = attn_module.self.key.weight.detach(), attn_module.self.key.bias.detach()
+V_W, V_b = attn_module.self.value.weight.detach(), attn_module.self.value.bias.detach()
+O_W, O_b = attn_module.output.dense.weight.detach(), attn_module.output.dense.bias.detach()
 
+W1, b1 = bert_model.bert.encoder.layer[11].intermediate.dense.weight.detach(), bert_model.bert.encoder.layer[11].intermediate.dense.bias.detach()
+W2, b2 = bert_model.bert.encoder.layer[11].output.dense.weight.detach(), bert_model.bert.encoder.layer[11].output.dense.bias.detach()
 
 # === ABLATION ===
 
 def q_hook(module, input, output):
     X = input[0].detach()
-    z_prime, z_orig, sparse_term = q_t(X, W=Q_W, b=torch.zeros_like(Q_b))
+    z_prime, z_orig, sparse_term = q_t(X, W=module.self.query.weight, b=module.self.query.bias)
     return sparse_term @ q_t.T_.to(output.device)
 
 def k_hook(module, input, output):
     X = input[0].detach()
     # z_prime, z_orig, sparse_term = k_t(X, W=K_W, b=torch.zeros_like(K_b))
-    z_prime, z_orig, sparse_term = q_t(X, W=K_W, b=K_b)
+    z_prime, z_orig, sparse_term = q_t(X, W=module.self.key.weight, b=module.self.key.bias)
     return sparse_term @ q_t.T_.to(output.device)
 
 def v_hook(module, input, output):
     X = input[0].detach()
-    z_prime, z_orig, sparse_term = v_t(X, W=V_W, b=V_b)
+    z_prime, z_orig, sparse_term = v_t(X, W=module.self.value.weight, b=module.self.value.bias)
     # z_prime, z_orig, sparse_term = q_t(X, W=V_W, b=torch.zeros_like(V_b))
     return sparse_term @ v_t.T_.to(output.device)
 
 def o_hook(module, input, output):
     X = input[0].detach()
-    z_prime, z_orig, sparse_term = o_t(X, W=O_W, b=O_b)
+    z_prime, z_orig, sparse_term = o_t(X, W=module.output.dense.weight, b=module.output.dense.bias)
     # z_prime, z_orig, sparse_term = q_t(X, W=O_W, b=torch.zeros_like(O_b))
     return sparse_term @ o_t.T_.to(output.device)
 
 def self_attn_hook(module, input, output):
     # input is a tuple of (hidden_states, attention_mask, head_mask, encoder_hidden_states, encoder_attention_mask)
     X = input[0].detach()
-    Q_prime, Q_orig, Q_sparse = q_t(X, W=Q_W, b=Q_b)
-    K_prime, K_orig, K_sparse = q_t(X, W=K_W, b=K_b)
-    V_prime, V_orig, V_sparse = v_t(X, W=V_W, b=V_b)
+    Q_prime, Q_orig, Q_sparse = q_t(X, W=module.self.query.weight, b=module.self.query.bias)
+    K_prime, K_orig, K_sparse = q_t(X, W=module.self.key.weight, b=module.self.key.bias)
+    V_prime, V_orig, V_sparse = v_t(X, W=module.self.value.weight, b=module.self.value.bias)
 
-    def transpose_for_scores(x: torch.Tensor) -> torch.Tensor:
-        new_x_shape = x.size()[:-1] + (module.num_attention_heads, module.attention_head_size)
-        x = x.view(new_x_shape)
-        return x.permute(0, 2, 1, 3)
-    
     QT_ = q_t.T_.to(X.device)
     VT_ = v_t.T_.to(X.device)
 
+    B, T, d = X.shape
+    dh = module.attention_head_size
+    H = module.num_attention_heads
+
     # tQ, tK, tV = module.query(X), module.key(X), module.value(X)
-    
-    # Q = Q_sparse
-    # K = K_sparse
-    # V = V_sparse @ VT_
+
+    # === replica version ===
 
     # Q = transpose_for_scores(Q_prime)
     # K = transpose_for_scores(K_prime)
-    V = transpose_for_scores(V_prime)
+    # V = transpose_for_scores(V_prime)
+
+    # # Q, K, V = Q_sparse @ QT_, K_sparse @ QT_, V_sparse @ VT_
+    # # Q = Q.view(B, T, H, dh).permute(0, 2, 1, 3)  # (B, H, T, dh)
+    # # K = K.view(B, T, H, dh).permute(0, 2, 1, 3)  # (B, H, T, dh)
+    # # V = V.view(B, T, H, dh).permute(0, 2, 1, 3)  # (B, H, T, dh)
 
     # A = Q @ K.transpose(-1, -2) / (module.attention_head_size ** 0.5)
     # attn_probs = torch.nn.functional.softmax(A, dim=-1)
@@ -97,59 +105,97 @@ def self_attn_hook(module, input, output):
     # new_context_layer_shape = context_layer.size()[:-2] + (module.all_head_size,)
     # context_layer = context_layer.view(new_context_layer_shape)
 
+    # return (context_layer, *output[1:])
+
     # === my version ===
-    B, T, d = X.shape
-    dh = module.attention_head_size
-    H = module.num_attention_heads
 
     Q_s, K_s = Q_sparse, K_sparse # shape (B, T, d)
-    QT_ = QT_.view(d, H, dh) # (d, H, dh)
+    Q_s = Q_s.masked_fill(Q_s.abs() <= 0.1, 0)
+    K_s = K_s.masked_fill(K_s.abs() <= 0.1, 0)
 
-    # === this works
-    # Qh = torch.einsum('btd,dhf->bhtf', Q_s, QT_)
-    # Kh = torch.einsum('btd,dhf->bhtf', K_s, QT_)
-    # attn_probs = torch.einsum('bhtf,bhsf->bhts', Qh, Kh) # (B, H, T, T)
-    # ===
+    QT_ = QT_.view(d, H, dh) # (d, H, dh)
 
     # === this now works too ===
     Ms = torch.einsum('dhf,ehf->hde', QT_, QT_)          # (H, d, d)
+    # [optional]
+    Ms = Ms.masked_fill(Ms.abs() <= 1.16, 0)
+
+    # Ms = torch.eye(d).unsqueeze(0).expand(H, -1, -1).to(X.device)  # (H, d, d)
+
     attn_probs = torch.einsum('btd,hde,bse->bhts', Q_s, Ms, K_s)  # (B, H, T, T)
 
     attn_probs /= (dh ** 0.5)
     attn_probs = torch.nn.functional.softmax(attn_probs, dim=-1)
     attn_probs = module.dropout(attn_probs)
 
-    context_layer = attn_probs @ V  # (B, H, T, dh)
+    VT_ = VT_.view(d, H, dh) # (d, H, dh)
+
+    context_layer = attn_probs @ torch.einsum('btd,dhf->bhtf', V_sparse, VT_)  # (B, H, T, dh)
     context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
     context_layer = context_layer.view(B, T, d)
 
     return (context_layer, *output[1:])
 
+def mlp1_hook(module, input, output):
+    X = input[0].detach()
+    return X @ module.weight.T
+
+def mlp2_hook(module, input, output):
+    X = input[0].detach()
+    return X @ module.weight.T
+
 # base_total_loss, base_n_masked = _run_dev_eval(bert_model, ds["validation"], batch_size=64, tokenizer=bert_tokenizer, device=torch.device("cpu"), max_length=128)
 # print(f"Baseline: {base_total_loss / base_n_masked:.4f}")
 
-# hq = module.self.query.register_forward_hook(q_hook)
-# hk = module.self.key.register_forward_hook(k_hook)
-# hv = module.self.value.register_forward_hook(v_hook)
-h_self_attn = module.self.register_forward_hook(self_attn_hook)
+# hq = attn_module.self.query.register_forward_hook(q_hook)
+# hk = attn_module.self.key.register_forward_hook(k_hook)
+# hv = attn_module.self.value.register_forward_hook(v_hook)
+# h_self_attn = attn_module.self.register_forward_hook(self_attn_hook)
 
-ho = module.output.dense.register_forward_hook(o_hook)
+# ho = attn_module.output.dense.register_forward_hook(o_hook)
 
-# total_loss, n_masked = _run_dev_eval(bert_model, ds["validation"], batch_size=64, tokenizer=bert_tokenizer, device=torch.device("cpu"), max_length=128)
-total_loss, n_masked = _run_dev_eval(bert_model, ds["validation"].select(list(range(64))), batch_size=10, tokenizer=bert_tokenizer, device=torch.device("cpu"), max_length=128)
+h_mlp1 = bert_model.bert.encoder.layer[11].intermediate.dense.register_forward_hook(mlp1_hook)
+h_mlp2 = bert_model.bert.encoder.layer[11].output.dense.register_forward_hook(mlp2_hook)
 
-print(f"Baseline: 2.2813\nAblated: {total_loss / n_masked:.4f}")
+# total_loss, n_masked = _run_dev_eval(bert_model, ds["validation"], batch_size=16, tokenizer=bert_tokenizer, device=torch.device("cpu"), max_length=128)
+total_loss, n_masked = _run_dev_eval(bert_model, ds["validation"].select(list(range(512))), batch_size=10, tokenizer=bert_tokenizer, device=torch.device("cpu"), max_length=128)
+
+print(f"True Baseline: 2.2813\nRecon Baseline: 2.2596\nAblated: {total_loss / n_masked:.4f}")
 
 # hq.remove()
 # hk.remove()
 # hv.remove()
-ho.remove()
+# ho.remove()
 
-h_self_attn.remove()
+# h_self_attn.remove()
+
+h_mlp1.remove()
+h_mlp2.remove()
 
 quit()
 
+# === THRESHOLDING M ===
 
+# Compute the norms of the columns of QT_
+# QT_ = q_t.T_.T
+# col_norms = QT_.norm(dim=0)
+
+# # Generate random samples whos norms follow the same distribution as the column norms of QT_
+# mean_norm = col_norms.mean().item()
+# std_norm = col_norms.std().item()
+# alpha_samples = torch.normal(mean_norm, std_norm, size=(1000,))
+# X = torch.randn(768, 1000)
+# X = X * alpha_samples / X.norm(dim=0, keepdim=True)
+
+# # Compute distribution of these dot products
+# dot = X.T @ X
+# dot = torch.tril(dot, diagonal=-1)
+# mean, std = dot.mean().item(), dot.std().item()
+# min_val, max_val = dot.min().item(), dot.max().item()
+
+# print(f"Mean: {mean:.4f}, Std: {std:.4f}, Min: {min_val:.4f}, Max: {max_val:.4f}")
+
+# quit()
 # === NORMS ===
 # norms_q = q_t.T_.norm(dim=0)
 # norms_k = k_t.T_.norm(dim=0)
@@ -196,35 +242,80 @@ inputs = bert_tokenizer(sample, return_tensors="pt")
 with torch.no_grad():
     outputs = bert_model(**inputs)
     X = outputs.hidden_states[10].squeeze(0)
+    A = outputs.attentions[11].squeeze(0)
 
 Q_, Q, Q_sparse = q_t(X, W=Q_W, b=Q_b)
 K_, K, K_sparse = q_t(X, W=K_W, b=K_b)
 V_, V, V_sparse = v_t(X, W=V_W, b=V_b)
-O_, O, O_sparse = o_t(X, W=O_W, b=O_b)
 
-A = Q @ K.T
+threshold = 0.1
+Q_sparse = Q_sparse.masked_fill(Q_sparse.abs() <= threshold, 0)
+K_sparse = K_sparse.masked_fill(K_sparse.abs() <= threshold, 0)
 
-Q_sparse = Q_sparse.masked_fill(Q_sparse.abs() <= 0.1, 0)
-K_sparse = K_sparse.masked_fill(K_sparse.abs() <= 0.1, 0)
+U_q = q_t.T_.T
+U_v = v_t.T_.T
+U_o = o_t.T_.T
 
-T_ = q_t.T_
+# norms = U_q.norm(dim=1)
+# print(norms.mean().item(), norms.std().item(), norms.min().item(), norms.max().item())
 
-alpha_factor = T_ @ T_.T
-alpha_factor = alpha_factor.masked_fill(alpha_factor.abs() <= 4, 0)
+T, d = X.shape
+dh = 64
+H = 12
 
-A_ = Q_sparse @ alpha_factor @ K_sparse.T
-# A_ = Q_ @ K_.T
+U_q_reshaped = U_q.T.view(d, H, dh)
+M = torch.einsum('dhf,ehf->hde', U_q_reshaped, U_q_reshaped)  # (H, d, d)
+M = M.masked_fill(M.abs() <= 1.16, 0)
 
-fig, axs = plt.subplots(1, 2, figsize=(12, 5))
+h, i, j = 1, 4, 1
+q_i, k_j = Q_sparse[i], K_sparse[j]
+mixing = M[h]
 
-im0 = axs[0].imshow(A.cpu().detach().numpy(), cmap='viridis', aspect='auto')
-axs[0].set_title("A")
-plt.colorbar(im0, ax=axs[0], fraction=0.046, pad=0.04)
+k_j_mixed = mixing @ k_j
+k_nt = torch.where(k_j.abs() > 0.1)[0]
+k_mixed_nt = torch.where(k_j_mixed.abs() > 0.1)[0]
 
-im1 = axs[1].imshow(A_.cpu().detach().numpy(), cmap='viridis', aspect='auto')
-axs[1].set_title("A_ (approximated)")
-plt.colorbar(im1, ax=axs[1], fraction=0.046, pad=0.04)
+# separate features by those that have lots of mixing, those that are independent, and those that are suppressed
+popular = torch.where((mixing > 0).sum(dim=-1) > 1)[0]
+unpopular = torch.where((mixing > 0).sum(dim=-1) == 1)[0]
+kernel = torch.where((mixing > 0).sum(dim=-1) == 0)[0]
 
-plt.tight_layout()
-plt.show()
+attn_logits = torch.einsum('td,hde,se->hts', Q_sparse, M, K_sparse)  # (H, T, T)
+attn_logits /= (dh ** 0.5)
+attn_probs = torch.nn.functional.softmax(attn_logits, dim=-1)
 
+U_v_reshaped = U_v.T.view(d, H, dh) # (d, H, dh)
+context_layer = attn_probs @ torch.einsum('td,dhf->htf', V_sparse, U_v_reshaped) # (H, T, dh)
+context_layer = context_layer.permute(1, 0, 2).contiguous().view(T, d) # (T, d)
+
+O_, O, O_sparse = o_t(context_layer, W=O_W, b=O_b)
+
+res_stream = O_sparse @ U_o.T
+# print(res_stream.shape)
+
+# print(f"Q_sparse: {Q_sparse.abs().mean().item():.4f} {Q_sparse.abs().std().item():.4f} {Q_sparse.abs().min().item():.4f} {Q_sparse.abs().max().item():.4f}")
+# print(f"K_sparse: {K_sparse.abs().mean().item():.4f} {K_sparse.abs().std().item():.4f} {K_sparse.abs().min().item():.4f} {K_sparse.abs().max().item():.4f}")
+# print(f"V_sparse: {V_sparse.abs().mean().item():.4f} {V_sparse.abs().std().item():.4f} {V_sparse.abs().min().item():.4f} {V_sparse.abs().max().item():.4f}")
+# print(f"O_sparse: {O_sparse.abs().mean().item():.4f} {O_sparse.abs().std().item():.4f} {O_sparse.abs().min().item():.4f} {O_sparse.abs().max().item():.4f}")
+
+# Use a diverging colormap with a symmetric log normalization
+# import matplotlib.colors as mcolors
+# for h in range(H):
+#     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+#     norm = mcolors.SymLogNorm(linthresh=1e-2, linscale=1.0, vmin=None, vmax=None, base=10)
+#     cmap = "seismic"
+
+#     im0 = axes[0].imshow((attn_logits[h] * (dh ** 0.5)).cpu().detach().numpy(), cmap=cmap, norm=norm, aspect='auto')
+#     axes[0].set_title(f"Head {h}")
+#     axes[0].set_xlabel("Key Position")
+#     axes[0].set_ylabel("Query Position")
+#     fig.colorbar(im0, ax=axes[0])
+
+#     im1 = axes[1].imshow((Q_sparse @ K_sparse.transpose(-1,-2)).cpu().detach().numpy(), cmap=cmap, norm=norm, aspect='auto')
+#     axes[1].set_title(f"Head {h} (new)")
+#     axes[1].set_xlabel("Key Position")
+#     axes[1].set_ylabel("Query Position")
+#     fig.colorbar(im1, ax=axes[1])
+
+#     plt.tight_layout()
+#     plt.show()
