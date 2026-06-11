@@ -24,6 +24,7 @@ def parse_args():
     p.add_argument("--name", type=str, default=None, help="Name for this run (defaults to basis_rotation_layer{L}_lambda_sparse{lambda_sparse}_lambda_inv{lambda_inv})_lambda_rel_match{lambda_rel_match})")
 
     p.add_argument("--layer", type=int, default=6, help="0-indexed BERT layer")
+    p.add_argument("--module", type=str, default="q", help="Which attention module to target: q, k, v, o, mlp1, mlp2")
 
     p.add_argument("--lambda_sparse", type=float, default=1.0)
     p.add_argument("--lambda_inv", type=float, default=1.0)
@@ -60,7 +61,20 @@ if torch.mps.is_available():
 # -------------------------
 
 bert_layer = model.encoder.layer[args.layer]
-module = bert_layer.attention.self.query  # nn.Linear(hidden_size, all_head_size)
+if args.module == "q":
+    module = bert_layer.attention.self.query
+elif args.module == "k":
+    module = bert_layer.attention.self.key
+elif args.module == "v":
+    module = bert_layer.attention.self.value
+elif args.module == "o":
+    module = bert_layer.attention.output.dense
+elif args.module == "mlp1":
+    module = bert_layer.intermediate.dense
+elif args.module == "mlp2":
+    module = bert_layer.output.dense
+else:
+    raise ValueError(f"Invalid module {args.module}, must be one of: q, k, v, o, mlp1, mlp2")
 W = module.weight.detach()                # [out_dim, in_dim] = [hidden, hidden] for BERT
 b = module.bias.detach()                  # [out_dim]
 
@@ -98,7 +112,7 @@ project = os.environ.get("WANDB_PROJECT", "cheap-sae")
 entity = os.environ.get("WANDB_ENTITY", None)
 
 if not args.name:
-    args.name = f"bert_oproj_layer{args.layer}_transformation_lambda_sparse{args.lambda_sparse}_lambda_inv{args.lambda_inv}_lambda_rel_match{args.lambda_rel_match}"
+    args.name = f"sae_{args.module}_layer{args.layer}_sparse{args.lambda_sparse}_inv{args.lambda_inv}_rel_match{args.lambda_rel_match}"
 
 run = wandb.init(
     project=project,
