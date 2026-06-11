@@ -88,8 +88,7 @@ def _hook(module, input, output):
 handle = module.register_forward_hook(_hook)
 
 d_out, d_in = W.shape
-assert d_in == d_out, f"Expected square Q weight, got {W.shape}"
-d = d_in
+d = d_out
 
 sae = SAE(d=d, init="rand").to(args.device)
 
