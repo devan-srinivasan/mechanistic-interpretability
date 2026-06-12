@@ -1,22 +1,22 @@
 import torch, json, numpy as np, nltk
 import matplotlib.pyplot as plt
 from transformers import BertTokenizer, BertModel, BertForMaskedLM, BertConfig
-from helpers import Transformation, _run_dev_eval
+from helpers import Transformation, _run_dev_eval, SAE
 from datasets import load_dataset
 
 def load_model(path):
     model_save = torch.load(path, map_location="cpu")
-    T, T_ = model_save['T'], model_save['T_']
-    transformation = Transformation(d=T.shape[0], init="rand")
-    transformation.T.data.copy_(T)
-    transformation.T_.data.copy_(T_)
+    U, S = model_save['U'], model_save['S']
+    transformation = SAE(d=U.shape[0], init="rand")
+    transformation.U.data.copy_(U)
+    transformation.S.data.copy_(S)
     transformation.eval()
     return transformation
 
-q_t = load_model("cheap_sae/artifacts/layer11/bert_qproj_layer11_transformation_lambda_sparse1.0_lambda_inv0.0_lambda_rel_match0.0.pt")
-k_t = load_model("cheap_sae/artifacts/layer11/bert_kproj_layer11_transformation_lambda_sparse1.0_lambda_inv0.0_lambda_rel_match0.0.pt")
-v_t = load_model("cheap_sae/artifacts/layer11/bert_vproj_layer11_transformation_lambda_sparse1.0_lambda_inv0.0_lambda_rel_match0.0.pt")
-o_t = load_model("cheap_sae/artifacts/layer11/bert_oproj_layer11_transformation_lambda_sparse1.0_lambda_inv0.0_lambda_rel_match0.0.pt")
+q_t = load_model("cheap_sae/artifacts/sae_layer11/sae_q_layer11_sparse1.0_inv1.0_rel_match1.0.pt")
+k_t = load_model("cheap_sae/artifacts/sae_layer11/sae_k_layer11_sparse1.0_inv1.0_rel_match1.0.pt")
+# v_t = load_model("cheap_sae/artifacts/sae_layer11/sae_v_layer11_sparse1.0_inv1.0_rel_match1.0.pt")
+o_t = load_model("cheap_sae/artifacts/sae_layer11/sae_o_layer11_sparse1.0_inv1.0_rel_match1.0.pt")
 
 
 bert_tokenizer = BertTokenizer.from_pretrained("bert-base-cased")
@@ -47,38 +47,19 @@ W2, b2 = bert_model.bert.encoder.layer[11].output.dense.weight.detach(), bert_mo
 
 # === ABLATION ===
 
-def q_hook(module, input, output):
+def proj_hook(module, input, output, sae: SAE):
     X = input[0].detach()
-    z_prime, z_orig, sparse_term = q_t(X, W=module.self.query.weight, b=module.self.query.bias)
-    return sparse_term @ q_t.T_.to(output.device)
-
-def k_hook(module, input, output):
-    X = input[0].detach()
-    # z_prime, z_orig, sparse_term = k_t(X, W=K_W, b=torch.zeros_like(K_b))
-    z_prime, z_orig, sparse_term = q_t(X, W=module.self.key.weight, b=module.self.key.bias)
-    return sparse_term @ q_t.T_.to(output.device)
-
-def v_hook(module, input, output):
-    X = input[0].detach()
-    z_prime, z_orig, sparse_term = v_t(X, W=module.self.value.weight, b=module.self.value.bias)
-    # z_prime, z_orig, sparse_term = q_t(X, W=V_W, b=torch.zeros_like(V_b))
-    return sparse_term @ v_t.T_.to(output.device)
-
-def o_hook(module, input, output):
-    X = input[0].detach()
-    z_prime, z_orig, sparse_term = o_t(X, W=module.output.dense.weight, b=module.output.dense.bias)
-    # z_prime, z_orig, sparse_term = q_t(X, W=O_W, b=torch.zeros_like(O_b))
-    return sparse_term @ o_t.T_.to(output.device)
+    sparse_term, recon = sae(X)
+    return recon
 
 def self_attn_hook(module, input, output):
     # input is a tuple of (hidden_states, attention_mask, head_mask, encoder_hidden_states, encoder_attention_mask)
     X = input[0].detach()
-    Q_prime, Q_orig, Q_sparse = q_t(X, W=module.self.query.weight, b=module.self.query.bias)
-    K_prime, K_orig, K_sparse = q_t(X, W=module.self.key.weight, b=module.self.key.bias)
-    V_prime, V_orig, V_sparse = v_t(X, W=module.self.value.weight, b=module.self.value.bias)
+    Q_sparse, Q_prime = q_t(X)
+    K_sparse, K_prime = k_t(X)
 
-    QT_ = q_t.T_.to(X.device)
-    VT_ = v_t.T_.to(X.device)
+    S_Q_T = q_t.S.T
+    S_K_T = k_t.S.T
 
     B, T, d = X.shape
     dh = module.attention_head_size
@@ -86,16 +67,11 @@ def self_attn_hook(module, input, output):
 
     # tQ, tK, tV = module.query(X), module.key(X), module.value(X)
 
-    # === replica version ===
+    # === original version which does work ===
 
-    # Q = transpose_for_scores(Q_prime)
-    # K = transpose_for_scores(K_prime)
-    # V = transpose_for_scores(V_prime)
-
-    # # Q, K, V = Q_sparse @ QT_, K_sparse @ QT_, V_sparse @ VT_
-    # # Q = Q.view(B, T, H, dh).permute(0, 2, 1, 3)  # (B, H, T, dh)
-    # # K = K.view(B, T, H, dh).permute(0, 2, 1, 3)  # (B, H, T, dh)
-    # # V = V.view(B, T, H, dh).permute(0, 2, 1, 3)  # (B, H, T, dh)
+    # Q = Q_prime.view(B, T, H, dh).permute(0, 2, 1, 3)  # (B, H, T, dh)
+    # K = K_prime.view(B, T, H, dh).permute(0, 2, 1, 3)  # (B, H, T, dh)
+    # V = module.value(X).view(B, T, H, dh).permute(0, 2, 1, 3)  # (B, H, T, dh)
 
     # A = Q @ K.transpose(-1, -2) / (module.attention_head_size ** 0.5)
     # attn_probs = torch.nn.functional.softmax(A, dim=-1)
@@ -107,20 +83,19 @@ def self_attn_hook(module, input, output):
 
     # return (context_layer, *output[1:])
 
-    # === my version ===
+    # === my version which does not work ===
 
     Q_s, K_s = Q_sparse, K_sparse # shape (B, T, d)
-    Q_s = Q_s.masked_fill(Q_s.abs() <= 0.1, 0)
-    K_s = K_s.masked_fill(K_s.abs() <= 0.1, 0)
+    # Q_s = Q_s.masked_fill(Q_s.abs() <= 0.1, 0)
+    # K_s = K_s.masked_fill(K_s.abs() <= 0.1, 0)
 
-    QT_ = QT_.view(d, H, dh) # (d, H, dh)
+    S_Q_T = S_Q_T.reshape(d, H, dh) # (d, H, dh)
+    S_K_T = S_K_T.reshape(d, H, dh) # (d, H, dh)
 
     # === this now works too ===
-    Ms = torch.einsum('dhf,ehf->hde', QT_, QT_)          # (H, d, d)
+    Ms = torch.einsum('dhf,ehf->hde', S_Q_T, S_K_T)          # (H, d, d)
     # [optional]
-    Ms = Ms.masked_fill(Ms.abs() <= 1.16, 0)
-
-    # Ms = torch.eye(d).unsqueeze(0).expand(H, -1, -1).to(X.device)  # (H, d, d)
+    # Ms = Ms.masked_fill(Ms.abs() <= 1.16, 0)
 
     attn_probs = torch.einsum('btd,hde,bse->bhts', Q_s, Ms, K_s)  # (B, H, T, T)
 
@@ -128,9 +103,9 @@ def self_attn_hook(module, input, output):
     attn_probs = torch.nn.functional.softmax(attn_probs, dim=-1)
     attn_probs = module.dropout(attn_probs)
 
-    VT_ = VT_.view(d, H, dh) # (d, H, dh)
+    V = module.value(X).reshape(B, T, H, dh).permute(0, 2, 1, 3)  # (B, H, T, dh)
 
-    context_layer = attn_probs @ torch.einsum('btd,dhf->bhtf', V_sparse, VT_)  # (B, H, T, dh)
+    context_layer = attn_probs @ V  # (B, H, T, dh)
     context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
     context_layer = context_layer.view(B, T, d)
 
@@ -147,30 +122,29 @@ def mlp2_hook(module, input, output):
 # base_total_loss, base_n_masked = _run_dev_eval(bert_model, ds["validation"], batch_size=64, tokenizer=bert_tokenizer, device=torch.device("cpu"), max_length=128)
 # print(f"Baseline: {base_total_loss / base_n_masked:.4f}")
 
-# hq = attn_module.self.query.register_forward_hook(q_hook)
-# hk = attn_module.self.key.register_forward_hook(k_hook)
-# hv = attn_module.self.value.register_forward_hook(v_hook)
-# h_self_attn = attn_module.self.register_forward_hook(self_attn_hook)
+# hq = attn_module.self.query.register_forward_hook(lambda module, input, output: proj_hook(module, input, output, q_t))
+# hk = attn_module.self.key.register_forward_hook(lambda module, input, output: proj_hook(module, input, output, k_t))
+h_self_attn = attn_module.self.register_forward_hook(self_attn_hook)
 
-# ho = attn_module.output.dense.register_forward_hook(o_hook)
+# ho = attn_module.output.dense.register_forward_hook(lambda module, input, output: proj_hook(module, input, output, o_t))
 
-h_mlp1 = bert_model.bert.encoder.layer[11].intermediate.dense.register_forward_hook(mlp1_hook)
-h_mlp2 = bert_model.bert.encoder.layer[11].output.dense.register_forward_hook(mlp2_hook)
+# h_mlp1 = bert_model.bert.encoder.layer[11].intermediate.dense.register_forward_hook(mlp1_hook)
+# h_mlp2 = bert_model.bert.encoder.layer[11].output.dense.register_forward_hook(mlp2_hook)
 
 # total_loss, n_masked = _run_dev_eval(bert_model, ds["validation"], batch_size=16, tokenizer=bert_tokenizer, device=torch.device("cpu"), max_length=128)
 total_loss, n_masked = _run_dev_eval(bert_model, ds["validation"].select(list(range(512))), batch_size=10, tokenizer=bert_tokenizer, device=torch.device("cpu"), max_length=128)
 
-print(f"True Baseline: 2.2813\nRecon Baseline: 2.2596\nAblated: {total_loss / n_masked:.4f}")
+print(f"True Baseline: 2.2813\nAblated: {total_loss / n_masked:.4f}")
 
 # hq.remove()
 # hk.remove()
 # hv.remove()
 # ho.remove()
 
-# h_self_attn.remove()
+h_self_attn.remove()
 
-h_mlp1.remove()
-h_mlp2.remove()
+# h_mlp1.remove()
+# h_mlp2.remove()
 
 quit()
 
