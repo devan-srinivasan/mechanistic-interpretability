@@ -89,7 +89,7 @@ d2 = W2.shape[0]
 
 mlp_sae = MLPSAE(d1=d1, d2=d2, init="rand").to(args.device)
 
-gelu = bert_layer.intermediate.activation  # get the GELU from the original model to apply to the sparse term
+gelu = bert_layer.intermediate.intermediate_act_fn  # get the GELU from the original model to apply to the sparse term
 # Freeze GELU if it has parameters (it usually doesn't, but for safety)
 for p in gelu.parameters() if hasattr(gelu, "parameters") else []:
     p.requires_grad_(False)
@@ -272,7 +272,8 @@ for epoch in range(args.num_epochs):
             "model_name": "bert-base-cased",
             "dataset_name": "Salesforce/wikitext",
             "dataset_config": "wikitext-103-v1",
-            "d": d,
+            "d1": d1,
+            "d2": d2,
             "lambda_sparse": args.lambda_sparse,
             "lambda_rel_match": args.lambda_rel_match,
         },
