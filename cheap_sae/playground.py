@@ -50,16 +50,16 @@ W2, b2 = bert_model.bert.encoder.layer[11].output.dense.weight.detach(), bert_mo
 def proj_hook(module, input, output, sae: SAE):
     X = input[0].detach()
     sparse_term, recon = sae(X)
-    return recon
+    return sparse_term
 
 def self_attn_hook(module, input, output):
     # input is a tuple of (hidden_states, attention_mask, head_mask, encoder_hidden_states, encoder_attention_mask)
     X = input[0].detach()
-    Q_sparse, Q_prime = q_t(X)
-    K_sparse, K_prime = k_t(X)
+    Q_s, Q_prime = q_t(X)
+    K_s, K_prime = k_t(X)
 
-    S_Q_T = q_t.S.T
-    S_K_T = k_t.S.T
+    S_Q = q_t.S
+    S_K = k_t.S
 
     B, T, d = X.shape
     dh = module.attention_head_size
@@ -71,6 +71,7 @@ def self_attn_hook(module, input, output):
 
     # Q = Q_prime.view(B, T, H, dh).permute(0, 2, 1, 3)  # (B, H, T, dh)
     # K = K_prime.view(B, T, H, dh).permute(0, 2, 1, 3)  # (B, H, T, dh)
+
     # V = module.value(X).view(B, T, H, dh).permute(0, 2, 1, 3)  # (B, H, T, dh)
 
     # A = Q @ K.transpose(-1, -2) / (module.attention_head_size ** 0.5)
@@ -85,22 +86,36 @@ def self_attn_hook(module, input, output):
 
     # === my version which does not work ===
 
-    Q_s, K_s = Q_sparse, K_sparse # shape (B, T, d)
+    # Q_s, K_s shape (B, T, d)
+
     # Q_s = Q_s.masked_fill(Q_s.abs() <= 0.1, 0)
     # K_s = K_s.masked_fill(K_s.abs() <= 0.1, 0)
 
-    S_Q_T = S_Q_T.reshape(d, H, dh) # (d, H, dh)
-    S_K_T = S_K_T.reshape(d, H, dh) # (d, H, dh)
+    S_Q_T = S_Q.T.contiguous().reshape(d, H, dh).permute(1, 0, 2)  # (H, d, dh)
+    S_K = S_K.contiguous().reshape(H, dh, d) # (H, dh, d)
 
-    # === this now works too ===
-    Ms = torch.einsum('dhf,ehf->hde', S_Q_T, S_K_T)          # (H, d, d)
+    # === this does not work ===
+    M = torch.einsum('hdf,hfe->hde', S_Q_T, S_K)  # (H, d, d)
     # [optional]
     # Ms = Ms.masked_fill(Ms.abs() <= 1.16, 0)
 
-    attn_probs = torch.einsum('btd,hde,bse->bhts', Q_s, Ms, K_s)  # (B, H, T, T)
+    # K_s_T = K_s.transpose(-1, -2)  # (B, d, T)
 
-    attn_probs /= (dh ** 0.5)
-    attn_probs = torch.nn.functional.softmax(attn_probs, dim=-1)
+    # Q_s and K_s are shape (T, d). S_Q_T is shape (H, d, dh) and S_K is shape (H, dh, d). 
+    # Q_p = torch.einsum('btd,hdf->bhtf', Q_s, S_Q_T)  # (B, H, T, dh)
+    # K_p_T = torch.einsum('hfd,btd->bhft', S_K, K_s)  # (B, H, dh, T)
+    # A_logits = Q_p @ K_p_T
+
+    # Q_pr, K_pr = Q_prime.view(B, T, H, dh).permute(0, 2, 1, 3), K_prime.view(B, T, H, dh).permute(0, 2, 1, 3)
+    # A_logits = Q_pr @ K_pr.transpose(-1, -2)
+
+    # Q, K = module.query(X).view(B, T, H, dh).permute(0, 2, 1, 3), module.key(X).view(B, T, H, dh).permute(0, 2, 1, 3)
+    # A_logits = Q @ K.transpose(-1, -2)
+
+    A_logits = Q_s.view(B, T, H, dh).permute(0, 2, 1, 3) @ K_s.view(B, T, H, dh).permute(0, 2, 3, 1)
+
+    A_logits /= (dh ** 0.5)
+    attn_probs = torch.nn.functional.softmax(A_logits, dim=-1)
     attn_probs = module.dropout(attn_probs)
 
     V = module.value(X).reshape(B, T, H, dh).permute(0, 2, 1, 3)  # (B, H, T, dh)
@@ -126,7 +141,7 @@ def mlp2_hook(module, input, output):
 # hk = attn_module.self.key.register_forward_hook(lambda module, input, output: proj_hook(module, input, output, k_t))
 h_self_attn = attn_module.self.register_forward_hook(self_attn_hook)
 
-# ho = attn_module.output.dense.register_forward_hook(lambda module, input, output: proj_hook(module, input, output, o_t))
+ho = attn_module.output.dense.register_forward_hook(lambda module, input, output: proj_hook(module, input, output, o_t))
 
 # h_mlp1 = bert_model.bert.encoder.layer[11].intermediate.dense.register_forward_hook(mlp1_hook)
 # h_mlp2 = bert_model.bert.encoder.layer[11].output.dense.register_forward_hook(mlp2_hook)
@@ -139,7 +154,7 @@ print(f"True Baseline: 2.2813\nAblated: {total_loss / n_masked:.4f}")
 # hq.remove()
 # hk.remove()
 # hv.remove()
-# ho.remove()
+ho.remove()
 
 h_self_attn.remove()
 

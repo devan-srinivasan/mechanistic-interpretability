@@ -56,7 +56,7 @@ class SAE(nn.Module):
     def forward(self, X: torch.Tensor):
         sparse_term = X @ self.U.T
         recon = sparse_term @ self.S.T
-        return recon, sparse_term
+        return sparse_term, recon
 
 class MLPSAE(nn.Module):
     def __init__(self, d1: int, d2: int, init: str = "rand", eye_noise: float = 1e-3):
