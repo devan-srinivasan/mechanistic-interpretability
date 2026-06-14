@@ -76,6 +76,7 @@ def _hook1(module, input, output):
 def _hook2(module, input, output):
     global acts
     # module_in is a tuple; for nn.Linear in BERT it's (X,) where X is [B, T, d]
+    acts["x2_in"] = input[0].detach()
     acts["y2_out"] = output.detach()
 
 handle1 = module1.register_forward_hook(_hook1)
@@ -181,13 +182,9 @@ for epoch in range(args.num_epochs):
         with torch.no_grad():
             _ = model(input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
 
-        y1 = acts["y1_out"]              # [B, T, d]
-        y1_prime = mlp_sae.forward_1(y1)  # [B, T, d]
-        
-        sparse_term = gelu(y1_prime)  # [B, T, d] -- sparse term
-        
-        z_prime = mlp_sae.forward_2(sparse_term, W2, b2)  # [B, T, d] -- transformed output to match y2
-        z_orig = acts["y2_out"]  # [B, T, d] output of the second linear layer, i.e. gelu(X @ W1.T + b1) @ W2.T + b2
+        X = acts["x2_in"]  # [B, T, d1]
+        z_orig = acts["y2_out"]  # [B, T, d2]
+        sparse_term, z_prime = mlp_sae(X, W=W2, b=b2)  # [B, T, d1], [B, T, d2]
         
         acts = {}  # clear for next step
 

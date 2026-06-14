@@ -73,12 +73,11 @@ class MLPSAE(nn.Module):
             raise ValueError("init must be 'eye' or 'rand'")
         self.U = nn.Parameter(U)
         self.S = nn.Parameter(S)
-
-    def forward_1(self, X: torch.Tensor):
-        return X @ self.U.T
     
-    def forward_2(self, X: torch.Tensor, W: torch.tensor, b: torch.tensor):
-        return (X @ W.T + b) @ self.S.T
+    def forward(self, X: torch.Tensor, W: torch.tensor, b: torch.tensor):
+        sparse = X @ self.U.T
+        recon = (sparse @ W.T + b) @ self.S.T
+        return sparse, recon
 
 
 def token_batches(dataset_split, batch_size: int, tokenizer, device, max_length):
