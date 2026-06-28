@@ -184,7 +184,8 @@ for epoch in range(args.num_epochs):
 
         X = acts["x2_in"]  # [B, T, d1]
         z_orig = acts["y2_out"]  # [B, T, d2]
-        sparse_term, z_prime = mlp_sae(X, W=W2, b=b2)  # [B, T, d1], [B, T, d2]
+        # sparse_term, z_prime = mlp_sae(X, W=W2, b=b2)  # [B, T, d1], [B, T, d2]
+        sparse_term, z_prime = mlp_sae(X)  # [B, T, d1], [B, T, d2]
         
         acts = {}  # clear for next step
 

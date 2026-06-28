@@ -1,8 +1,9 @@
-import torch, json, numpy as np, nltk
+import torch, json, numpy as np, nltk, torch.nn.functional as F, os
 import matplotlib.pyplot as plt
 from transformers import BertTokenizer, BertModel, BertForMaskedLM, BertConfig
 from helpers import Transformation, _run_dev_eval, SAE, MLPSAE
 from datasets import load_dataset
+from torch.nn.functional import cosine_similarity
 
 def load_model(path):
     model_save = torch.load(path, map_location="cpu")
@@ -38,6 +39,8 @@ cfg.output_attentions = True
 bert_model = BertForMaskedLM.from_pretrained("bert-base-cased", config=cfg)
 bert_model.eval() 
 
+z_q, z_k, z_o, z_mlp = None, None, None, None
+
 
 ds = load_dataset("Salesforce/wikitext", "wikitext-103-v1")
 ds = ds.filter(lambda x: len(x["text"].split()) > 5 and not x["text"].startswith(" = "))
@@ -56,10 +59,30 @@ W2, b2 = bert_model.bert.encoder.layer[11].output.dense.weight.detach(), bert_mo
 
 # === ABLATION ===
 
+
+def smooth(x: torch.tensor, n_features: int = 50, dim: int =-1):
+    if x.ndim == 3:
+        B, T, d = x.shape
+    else:
+        T, d = x.shape
+    # find indices of top n_features by absolute value along last dim
+    topk = torch.topk(x.abs(), k=n_features, dim=-1)
+    # Create a mask of zeros, then scatter ones at the topk indices
+    mask = torch.zeros_like(x, dtype=torch.bool)
+    mask.scatter_(-1, topk.indices, True)
+    x_ = x * mask
+
+    return x_
+
 def proj_hook(module, input, output, sae: SAE):
     X = input[0].detach()
     sparse_term, recon = sae(X)
-    return recon
+
+    # sparse_term = smooth(sparse_term, n_features=n_features)
+
+    global z_o
+    z_o = sparse_term
+    return sparse_term @ sae.S.T
 
 def self_attn_hook(module, input, output):
     # input is a tuple of (hidden_states, attention_mask, head_mask, encoder_hidden_states, encoder_attention_mask)
@@ -97,8 +120,15 @@ def self_attn_hook(module, input, output):
 
     # Q_s, K_s shape (B, T, d)
 
-    # Q_s = Q_s.masked_fill(Q_s.abs() <= 0.1, 0)
-    # K_s = K_s.masked_fill(K_s.abs() <= 0.1, 0)
+    # Q_s = Q_s.masked_fill(Q_s.abs() <= 0.2, 0)
+    # K_s = K_s.masked_fill(K_s.abs() <= 0.2, 0)
+
+    # Q_s = smooth(Q_s, n_features=20)
+    # K_s = smooth(K_s, n_features=20)
+
+    global z_q, z_k
+    z_q = Q_s
+    z_k = K_s
 
     S_Q_T = S_Q.T.contiguous().reshape(d, H, dh).permute(1, 0, 2)  # (H, d, dh)
     S_K = S_K.contiguous().reshape(H, dh, d) # (H, dh, d)
@@ -106,7 +136,9 @@ def self_attn_hook(module, input, output):
     # === this does not work ===
     M = torch.einsum('hdf,hfe->hde', S_Q_T, S_K)  # (H, d, d)
     # [optional]
-    # Ms = Ms.masked_fill(Ms.abs() <= 1.16, 0)
+    # M = M.masked_fill(M.abs() <= 1, 0)
+
+    # M = smooth(M, n_features=40, dim=-1)
 
     A_logits = torch.einsum('btd,hde,bse->bhts', Q_s, M, K_s)  # (H, T, T)
 
@@ -138,11 +170,14 @@ def self_attn_hook(module, input, output):
 
     return (context_layer, *output[1:])
 
-def mlp1_hook(module, input, output):
-    return mlp_t.forward_1(output)
+def mlp2_hook(module, input, output, sae: MLPSAE):
+    sparse_term, recon = sae(input[0], W=W2, b=b2)
 
-def mlp2_hook(module, input, output):
-    return mlp_t.forward_2(input[0], W=W2, b=b2)
+    # sparse_term = smooth(sparse_term, n_features=n_features)
+
+    global z_mlp
+    z_mlp = sparse_term
+    return (sparse_term @ W2.T + b2) @ sae.S.T
 
 # base_total_loss, base_n_masked = _run_dev_eval(bert_model, ds["validation"], batch_size=64, tokenizer=bert_tokenizer, device=torch.device("cpu"), max_length=128)
 # print(f"Baseline: {base_total_loss / base_n_masked:.4f}")
@@ -153,25 +188,23 @@ h_self_attn = attn_module.self.register_forward_hook(self_attn_hook)
 
 ho = attn_module.output.dense.register_forward_hook(lambda module, input, output: proj_hook(module, input, output, o_t))
 
-h_mlp1 = bert_model.bert.encoder.layer[11].intermediate.dense.register_forward_hook(mlp1_hook)
-h_mlp2 = bert_model.bert.encoder.layer[11].output.dense.register_forward_hook(mlp2_hook)
+h_mlp2 = bert_model.bert.encoder.layer[11].output.dense.register_forward_hook(lambda module, input, output: mlp2_hook(module, input, output, mlp_t))
 
 # total_loss, n_masked = _run_dev_eval(bert_model, ds["validation"], batch_size=16, tokenizer=bert_tokenizer, device=torch.device("cpu"), max_length=128)
-total_loss, n_masked = _run_dev_eval(bert_model, ds["validation"].select(list(range(128))), batch_size=10, tokenizer=bert_tokenizer, device=torch.device("cpu"), max_length=128)
+total_loss, n_masked = _run_dev_eval(bert_model, ds["validation"].select(list(range(1500))), batch_size=20, tokenizer=bert_tokenizer, device=torch.device("cpu"), max_length=128)
 
-print(f"True Baseline: 2.2813\nAblated: {total_loss / n_masked:.4f}")
+print(f"Baseline: 2.2813 | Ablated: {total_loss / n_masked:.4f}")
 
 # hq.remove()
 # hk.remove()
 # hv.remove()
-ho.remove()
+# ho.remove()
 
-h_self_attn.remove()
+# h_self_attn.remove()
 
-h_mlp1.remove()
-h_mlp2.remove()
+# h_mlp2.remove()
 
-quit()
+# quit()
 
 # === THRESHOLDING M ===
 
@@ -243,78 +276,19 @@ with torch.no_grad():
     X = outputs.hidden_states[10].squeeze(0)
     A = outputs.attentions[11].squeeze(0)
 
-Q_, Q, Q_sparse = q_t(X, W=Q_W, b=Q_b)
-K_, K, K_sparse = q_t(X, W=K_W, b=K_b)
-V_, V, V_sparse = v_t(X, W=V_W, b=V_b)
-
-threshold = 0.1
-Q_sparse = Q_sparse.masked_fill(Q_sparse.abs() <= threshold, 0)
-K_sparse = K_sparse.masked_fill(K_sparse.abs() <= threshold, 0)
-
-U_q = q_t.T_.T
-U_v = v_t.T_.T
-U_o = o_t.T_.T
-
-# norms = U_q.norm(dim=1)
-# print(norms.mean().item(), norms.std().item(), norms.min().item(), norms.max().item())
-
 T, d = X.shape
 dh = 64
 H = 12
 
-U_q_reshaped = U_q.T.view(d, H, dh)
-M = torch.einsum('dhf,ehf->hde', U_q_reshaped, U_q_reshaped)  # (H, d, d)
-M = M.masked_fill(M.abs() <= 1.16, 0)
+z_q, z_k = z_q.squeeze(0), z_k.squeeze(0)  # (T, d)
+z_o, z_mlp = z_o.squeeze(0), z_mlp.squeeze(0)  # (T, d)
 
-h, i, j = 1, 4, 1
-q_i, k_j = Q_sparse[i], K_sparse[j]
-mixing = M[h]
 
-k_j_mixed = mixing @ k_j
-k_nt = torch.where(k_j.abs() > 0.1)[0]
-k_mixed_nt = torch.where(k_j_mixed.abs() > 0.1)[0]
+S_Q, S_K = q_t.S, k_t.S
+S_Q_T = S_Q.T.contiguous().reshape(d, H, dh).permute(1, 0, 2)  # (H, d, dh)
+S_K = S_K.contiguous().reshape(H, dh, d) # (H, dh, d)
+M = torch.einsum('hdf,hfe->hde', S_Q_T, S_K)  # (H, d, d)
+# [optional]
+M = M.masked_fill(M.abs() <= 1, 0)
 
-# separate features by those that have lots of mixing, those that are independent, and those that are suppressed
-popular = torch.where((mixing > 0).sum(dim=-1) > 1)[0]
-unpopular = torch.where((mixing > 0).sum(dim=-1) == 1)[0]
-kernel = torch.where((mixing > 0).sum(dim=-1) == 0)[0]
-
-attn_logits = torch.einsum('td,hde,se->hts', Q_sparse, M, K_sparse)  # (H, T, T)
-attn_logits /= (dh ** 0.5)
-attn_probs = torch.nn.functional.softmax(attn_logits, dim=-1)
-
-U_v_reshaped = U_v.T.view(d, H, dh) # (d, H, dh)
-context_layer = attn_probs @ torch.einsum('td,dhf->htf', V_sparse, U_v_reshaped) # (H, T, dh)
-context_layer = context_layer.permute(1, 0, 2).contiguous().view(T, d) # (T, d)
-
-O_, O, O_sparse = o_t(context_layer, W=O_W, b=O_b)
-
-res_stream = O_sparse @ U_o.T
-# print(res_stream.shape)
-
-# print(f"Q_sparse: {Q_sparse.abs().mean().item():.4f} {Q_sparse.abs().std().item():.4f} {Q_sparse.abs().min().item():.4f} {Q_sparse.abs().max().item():.4f}")
-# print(f"K_sparse: {K_sparse.abs().mean().item():.4f} {K_sparse.abs().std().item():.4f} {K_sparse.abs().min().item():.4f} {K_sparse.abs().max().item():.4f}")
-# print(f"V_sparse: {V_sparse.abs().mean().item():.4f} {V_sparse.abs().std().item():.4f} {V_sparse.abs().min().item():.4f} {V_sparse.abs().max().item():.4f}")
-# print(f"O_sparse: {O_sparse.abs().mean().item():.4f} {O_sparse.abs().std().item():.4f} {O_sparse.abs().min().item():.4f} {O_sparse.abs().max().item():.4f}")
-
-# Use a diverging colormap with a symmetric log normalization
-# import matplotlib.colors as mcolors
-# for h in range(H):
-#     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-#     norm = mcolors.SymLogNorm(linthresh=1e-2, linscale=1.0, vmin=None, vmax=None, base=10)
-#     cmap = "seismic"
-
-#     im0 = axes[0].imshow((attn_logits[h] * (dh ** 0.5)).cpu().detach().numpy(), cmap=cmap, norm=norm, aspect='auto')
-#     axes[0].set_title(f"Head {h}")
-#     axes[0].set_xlabel("Key Position")
-#     axes[0].set_ylabel("Query Position")
-#     fig.colorbar(im0, ax=axes[0])
-
-#     im1 = axes[1].imshow((Q_sparse @ K_sparse.transpose(-1,-2)).cpu().detach().numpy(), cmap=cmap, norm=norm, aspect='auto')
-#     axes[1].set_title(f"Head {h} (new)")
-#     axes[1].set_xlabel("Key Position")
-#     axes[1].set_ylabel("Query Position")
-#     fig.colorbar(im1, ax=axes[1])
-
-#     plt.tight_layout()
-#     plt.show()
+print()

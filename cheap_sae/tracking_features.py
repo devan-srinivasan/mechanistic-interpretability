@@ -1,88 +1,151 @@
-import torch, numpy as np
-from transformers import BertModel, BertTokenizer, BertConfig
-from tqdm import tqdm
-from scipy.stats import normaltest
+import torch, json, numpy as np, nltk, os
 import matplotlib.pyplot as plt
-from datasets import load_dataset
-import os
+from transformers import BertTokenizer, BertModel, BertForMaskedLM, BertConfig, BertForQuestionAnswering
+from helpers import Transformation, _run_dev_eval, SAE, MLPSAE, token_batches, token_batches_squad
+from datasets import load_dataset, load_from_disk
+from tqdm import tqdm
+
+run_path = "cheap_sae/features/squad"
+
+device = "cuda:7" if torch.cuda.is_available() else "cpu"
+
+batch_idx = None
+
+def load_model(sae, path):
+    save = torch.load(path)
+    sae.U.data.copy_(save["U"])
+    sae.S.data.copy_(save["S"])
+    return sae
+
+q_sae = load_model(SAE(d=768, init="eye"), "cheap_sae/artifacts/sae_layer11_correct/sae_q_layer11_sparse1.0_inv1.0_rel_match1.0.pt")
+k_sae = load_model(SAE(d=768, init="eye"), "cheap_sae/artifacts/sae_layer11_correct/sae_k_layer11_sparse1.0_inv1.0_rel_match1.0.pt")
+o_sae = load_model(SAE(d=768, init="eye"), "cheap_sae/artifacts/sae_layer11_correct/sae_o_layer11_sparse1.0_inv1.0_rel_match1.0.pt")
+mlp_sae = load_model(MLPSAE(d1=3072, d2=768, init="eye"), "cheap_sae/artifacts/sae_layer11_correct/mlp_sae_mlp_layer11_sparse1.0_rel_match1.0.pt")
+
+# ds = load_dataset("Salesforce/wikitext", "wikitext-103-v1")
+# ds = ds.filter(lambda x: len(x["text"].split()) > 5 and not x["text"].startswith(" = "))
+
+ds = load_from_disk("cheap_sae/data/bert_cased_squad_tokenized")["validation"]
 
 tokenizer = BertTokenizer.from_pretrained("bert-base-cased")
 
 cfg = BertConfig.from_pretrained("bert-base-cased")
 cfg._attn_implementation = "eager"
+cfg.output_hidden_states = True
+cfg.output_attentions = True
 
-model = BertModel.from_pretrained("bert-base-cased", config=cfg)
+model = BertForQuestionAnswering.from_pretrained("cheap_sae/models/squad", config=cfg)
+model.eval()
 
-ds = load_dataset("Salesforce/wikitext", "wikitext-103-v1")
+attn_module = model.bert.encoder.layer[11].attention
+intermediate_module = model.bert.encoder.layer[11].intermediate
+output_module = model.bert.encoder.layer[11].output
 
-# clean ds a bit
-ds = ds.filter(lambda x: len(x["text"].split()) > 5 and not x["text"].startswith(" = "))
+Q_W, Q_b = attn_module.self.query.weight.detach(), attn_module.self.query.bias.detach()
+K_W, K_b = attn_module.self.key.weight.detach(), attn_module.self.key.bias.detach()
+O_W, O_b = attn_module.output.dense.weight.detach(), attn_module.output.dense.bias.detach()
 
-batch_size = 32
+W1, b1 = model.bert.encoder.layer[11].intermediate.dense.weight.detach(), model.bert.encoder.layer[11].intermediate.dense.bias.detach()
+W2, b2 = model.bert.encoder.layer[11].output.dense.weight.detach(), model.bert.encoder.layer[11].output.dense.bias.detach()
 
-master_dir = "/Users/mrmackamoo/Projects/topological_analysis/manifold_evolution/results/feature_tracking/bert/wikitext-103/"
-os.makedirs(master_dir, exist_ok=True)
 
-t = {}
+def proj_hook(module, input, output, sae: SAE):
+    global batch_idx
+    X = input[0].detach()
+    sparse_term, recon = sae(X)
 
-def select_significant_features(tensor):
-    ...
+    # TODO save sparse_term somehow
+    torch.save(sparse_term, os.path.join(run_path, str(batch_idx), "o.pt"))
 
-def attention_hook(module, input, output, layer):
-    global t
-    X = input[0]
-    Q, K = module.self.query(X), module.self.key(X)
+    return recon
 
-    t[f'layer[{layer}].attn.Q'] = ...
-    t[f'layer[{layer}].attn.K'] = ...
+def self_attn_hook(module, input, output):
+    global batch_idx
+    # input is a tuple of (hidden_states, attention_mask, head_mask, encoder_hidden_states, encoder_attention_mask)
+    X = input[0].detach()
+    Q_s, Q_prime = q_sae(X)
+    K_s, K_prime = k_sae(X)
 
-    W_v, b_v = module.self.value.weight, module.self.value.bias
-    W_o, b_o = module.output.dense.weight, module.output.dense.bias
+    S_Q = q_sae.S
+    S_K = k_sae.S
+
+    B, T, d = X.shape
+    dh = module.attention_head_size
+    H = module.num_attention_heads
+
+    # Q_s = Q_s.masked_fill(Q_s.abs() <= 0.2, 0)
+    # K_s = K_s.masked_fill(K_s.abs() <= 0.2, 0)
+
+    # TODO save Q_s and K_s somehow
+    torch.save(Q_s.cpu(), os.path.join(run_path, str(batch_idx), "Q_s.pt"))
+    torch.save(K_s.cpu(), os.path.join(run_path, str(batch_idx), "K_s.pt"))
+
+    S_Q_T = S_Q.T.contiguous().reshape(d, H, dh).permute(1, 0, 2)  # (H, d, dh)
+    S_K = S_K.contiguous().reshape(H, dh, d) # (H, dh, d)
+
+    # === this does not work ===
+    M = torch.einsum('hdf,hfe->hde', S_Q_T, S_K)  # (H, d, d)
+    # [optional]
+    # M = M.masked_fill(M.abs() <= 1, 0)
     
-    W_OV_w = W_o @ W_v
-    W_OV_b = W_o @ b_v + b_o
+    # TODO save M if not saved already
+    if not os.path.exists(run_path + "M.pt"):
+        torch.save(M, run_path + "M.pt")
+
+    A_logits = torch.einsum('btd,hde,bse->bhts', Q_s, M, K_s)  # (H, T, T)
+
+    A_logits /= (dh ** 0.5)
+    attn_probs = torch.nn.functional.softmax(A_logits, dim=-1)
+    attn_probs = module.dropout(attn_probs)
+
+    V = module.value(X).reshape(B, T, H, dh).permute(0, 2, 1, 3)  # (B, H, T, dh)
+
+    context_layer = attn_probs @ V  # (B, H, T, dh)
+    context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+    context_layer = context_layer.view(B, T, d)
+
+    return (context_layer, *output[1:])
+
+def mlp2_hook(module, input, output):
+    global batch_idx
+    sparse_term, recon = mlp_sae(input[0], W=W2, b=b2)
+
+    # TODO save sparse_term somehow
+    torch.save(sparse_term, os.path.join(run_path, str(batch_idx), "mlp2.pt"))
+
+    return recon
+
+h_self_attn = attn_module.self.register_forward_hook(self_attn_hook)
+ho = attn_module.output.dense.register_forward_hook(lambda module, input, output: proj_hook(module, input, output, o_sae))
+h_mlp2 = model.bert.encoder.layer[11].output.dense.register_forward_hook(mlp2_hook)
+
+def measure_dir_size(dir: str):
+    """ Measures the size in MB of a directory (Recursively) """
+    total_size = 0
+    for dirpath, dirnames, filenames in os.walk(dir):
+        for f in filenames:
+            fp = os.path.join(dirpath, f)
+            if os.path.isfile(fp):
+                total_size += os.path.getsize(fp)
+    return total_size / (1024 * 1024)
     
-    OV = X @ W_OV_w.T + W_OV_b
-
-    t[f'layer[{layer}].attn.OV'] = ...
-
-    return output
-
-def mlp_act_hook(module, input, output, layer):
-    global t
-    t[f'layer[{layer}].mlp.act'] = ...
-    return output
-
-handles = []
-
-for layer in range(12):
-
-    handles.extend([
-        model.encoder.layer[layer].attention.register_forward_hook(lambda m, i, o, layer=layer: attention_hook(m, i, o, layer)),
-        model.encoder.layer[layer].intermediate.intermediate_act_fn.register_forward_hook(lambda m, i, o, layer=layer: mlp_act_hook(m, i, o, layer)),
-    ])
-
-n_samples = 5000 # len(ds["train"])
-for batch_idx in tqdm(range(0, n_samples, batch_size)):
-    batch = ds["train"].select(range(batch_idx, min(batch_idx + batch_size, n_samples)))
-    texts = [sample["text"] for sample in batch]
-    inputs = tokenizer(texts, truncation=True, padding=True, return_tensors="pt")
-
-    batch_dir = os.path.join(master_dir, f"batch_{batch_idx // batch_size:03d}")
-    os.makedirs(batch_dir, exist_ok=True)
-
+# pbar = tqdm(enumerate(token_batches(ds, 32, tokenizer, device, 128)))
+bs = 32
+pbar = tqdm(enumerate(token_batches_squad(ds, bs, tokenizer, device, 128)), total=len(ds) // bs)
+for batch_idx, batch in pbar:
+    os.makedirs(os.path.join(run_path, str(batch_idx)), exist_ok=True)
+    tokens = [tokenizer.convert_ids_to_tokens(ids) for ids in batch['input_ids']]
+    start_positions = batch['start_positions'].cpu().tolist()
+    end_positions = batch['end_positions'].cpu().tolist()
+    with open(os.path.join(run_path, str(batch_idx), "tokens.json"), "w") as f:
+        json.dump({
+            "tokens": tokens,
+            "start_positions": start_positions,
+            "end_positions": end_positions,
+        }, f)
     with torch.no_grad():
-        _ = model(**inputs)
-
-    tokens = [tokenizer.convert_ids_to_tokens(inputs['input_ids'][i]) for i in range(inputs['input_ids'].shape[0])]
-
-    # Save results in the directory
-    with open(os.path.join(batch_dir, "tokens.txt"), "w") as f:
-        for token_list in tokens:
-            f.write(" ".join(token_list) + "\n")
+        # _ = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'], labels=batch['input_ids'])
+        outputs = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'], start_positions=batch['start_positions'], end_positions=batch['end_positions'])
     
-    torch.save(...)
-    torch.save(inputs["attention_mask"], os.path.join(batch_dir, "attention_mask.pt"))
-
-for h in handles:
-    h.remove()
+    pbar.set_postfix_str(f"Size: {measure_dir_size(run_path):.2f} MB")
+    quit()
