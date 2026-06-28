@@ -92,6 +92,7 @@ if args.d1 is None and args.d2 is None:
     d2 = W2.shape[0]
 else:
     assert args.d1 is not None and args.d2 is not None, "If you specify d1 or d2, you must specify both."
+    d1, d2 = args.d1, args.d2
 
 mlp_sae = MLPSAE(d1=d1, d2=d2, init="rand").to(args.device)
 
