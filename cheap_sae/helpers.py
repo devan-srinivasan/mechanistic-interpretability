@@ -82,6 +82,7 @@ class MLPSAE(nn.Module):
         return sparse, recon
     
     def forward(self, X: torch.Tensor):
+        
         sparse = X @ self.U.T
         recon = sparse @ self.S.T
         return sparse, recon

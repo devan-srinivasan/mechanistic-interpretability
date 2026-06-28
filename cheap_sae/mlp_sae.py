@@ -24,7 +24,9 @@ def parse_args():
     p.add_argument("--name", type=str, default=None, help="Name for this run (defaults to basis_rotation_layer{L}_sparse{lambda_sparse}_rel_match{lambda_rel_match})")
 
     p.add_argument("--layer", type=int, default=6, help="0-indexed BERT layer")
-    p.add_argument("--module", type=str, default="q", help="Which attention module to target: q, k, v, o, mlp1, mlp2")
+    p.add_argument("--module", type=str, default="q", help="Which attention module to target: mlp")
+    p.add_argument("--d1", type=int, default=None, help="Input dimension of the target module (e.g. 768 for Q/K/V/O, 3072 for MLP)")
+    p.add_argument("--d2", type=int, default=None, help="Output dimension of the target module (e.g. 768 for Q/K/V/O, 3072 for MLP)")
 
     p.add_argument("--lambda_sparse", type=float, default=1.0)
     p.add_argument("--lambda_rel_match", type=float, default=1.0)
@@ -85,8 +87,11 @@ handle2 = module2.register_forward_hook(_hook2)
 W1, b1 = module1.weight.detach(), module1.bias.detach()
 W2, b2 = module2.weight.detach(), module2.bias.detach()
 
-d1 = W1.shape[0]
-d2 = W2.shape[0]
+if args.d1 is None and args.d2 is None:
+    d1 = W1.shape[0]
+    d2 = W2.shape[0]
+else:
+    assert args.d1 is not None and args.d2 is not None, "If you specify d1 or d2, you must specify both."
 
 mlp_sae = MLPSAE(d1=d1, d2=d2, init="rand").to(args.device)
 
