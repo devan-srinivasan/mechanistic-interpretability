@@ -31,6 +31,7 @@ W2, b2 = model.bert.encoder.layer[11].output.dense.weight.detach(), model.bert.e
 
 z_q, z_k, z_mlp, z_o, mix = None, None, None, None, None
 
+# Rows are atoms (because when applied in the mul they are transposed so the columns are the atoms)
 Q_atoms, K_atoms = q_sae.S.detach().T, k_sae.S.detach().T
 O_atoms = o_sae.S.detach().T
 MLP_atoms = W2.T @ mlp_sae.S.detach().T
@@ -96,6 +97,9 @@ attn_module = model.bert.encoder.layer[11].attention
 intermediate_module = model.bert.encoder.layer[11].intermediate
 output_module = model.bert.encoder.layer[11].output
 
+ln1 = model.bert.encoder.layer[11].attention.output.LayerNorm
+ln2 = model.bert.encoder.layer[11].output.LayerNorm
+
 h_self_attn = attn_module.self.register_forward_hook(self_attn_hook)
 ho = attn_module.output.dense.register_forward_hook(proj_hook)
 h_mlp2 = output_module.dense.register_forward_hook(mlp2_hook)
@@ -115,6 +119,8 @@ z_k = z_k.squeeze(0)
 z_o = z_o.squeeze(0)
 z_mlp = z_mlp.squeeze(0)
 
-s, e = torch.argmax(start_logits), torch.argmax(end_logits)
+s, e = start_logits.argmax().item(), end_logits.argmax().item()
+
+
 
 print("pred:", tokenizer.decode(enc["input_ids"][0][s:e+1]))
