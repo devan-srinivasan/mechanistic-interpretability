@@ -159,7 +159,7 @@ wandb_config = {
     "lambda_inv": args.lambda_inv,
     "lambda_rel_match": args.lambda_rel_match,
     # dimensions
-    "d": d,
+    "dims": args.dims,
     # init
     "transformation_init": "rand",
 }
