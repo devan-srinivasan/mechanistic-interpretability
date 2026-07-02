@@ -203,8 +203,11 @@ for epoch in range(args.num_epochs):
         sparse_loss = sparse_term.abs().mean()
 
         # 3) Optional invertibility loss
-        inv_loss = F.mse_loss(sae.U @ sae.S.T, torch.eye(d, device=sae.U.device))
-
+        if args.lambda_inv > 0:
+            inv_loss += F.mse_loss(sae.U @ sae.S.T, torch.eye(sae.U.shape[0], device=sae.U.device))
+        else:
+            inv_loss = torch.tensor(0.0, device=sae.U.device)
+        
         loss = match_loss + args.lambda_rel_match * rel_match_loss + args.lambda_sparse * sparse_loss + args.lambda_inv * inv_loss
 
         optimizer.zero_grad(set_to_none=True)
