@@ -186,7 +186,7 @@ for epoch in range(args.num_epochs):
         acts = {}  # clear for next step
 
         # Run our transformation model on the captured pair for reconstruction
-        sparse_term, z_prime = sae(Y)
+        sparse_term, z_prime = sae(X)
         z_orig = Y
 
         # 1) Functional match
