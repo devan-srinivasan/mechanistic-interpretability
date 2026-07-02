@@ -65,7 +65,7 @@ class MLPSAE(nn.Module):
         super().__init__()
         if init == "rand":
             U = torch.randn(d1, d1) * eye_noise + torch.eye(d1)
-            S = torch.randn(d2, d1) * eye_noise + torch.eye(min(d1, d2))
+            S = torch.randn(d2, d1) * eye_noise # + torch.eye(min(d1, d2))
         else:
             raise ValueError("init must be 'rand'")
         self.U = nn.Parameter(U)
