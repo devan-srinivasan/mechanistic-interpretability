@@ -8,7 +8,7 @@ from datasets import load_dataset
 from tqdm import tqdm
 import wandb
 from dotenv import load_dotenv
-from helpers import token_batches, _run_dev_eval, SAE
+from helpers import token_batches, _run_dev_eval, SAE, MLPSAE
 import argparse
 
 # -------------------------
@@ -25,6 +25,7 @@ def parse_args():
 
     p.add_argument("--layer", type=int, default=6, help="0-indexed BERT layer")
     p.add_argument("--module", type=str, default="q", help="Which attention module to target: q, k, v, o, mlp1, mlp2")
+    p.add_argument("--dims", type=list[int], default=[768], help="List of dimensions for the SAE (default: [768])")
 
     p.add_argument("--lambda_sparse", type=float, default=1.0)
     p.add_argument("--lambda_inv", type=float, default=1.0)
@@ -87,10 +88,12 @@ def _hook(module, input, output):
 
 handle = module.register_forward_hook(_hook)
 
-d_out, d_in = W.shape
-d = d_out
-
-sae = SAE(d=d, init="rand").to(args.device)
+if args.module in ["mlp1", "mlp2"]:
+    d1, d2 = args.dims[0], args.dims[1] 
+    sae = MLPSAE(d1=d1, d2=d2, init="rand").to(args.device)
+else:
+    d = args.dims[0]
+    sae = SAE(d=d, init="rand").to(args.device)
 
 optimizer = torch.optim.AdamW(sae.parameters(), lr=args.learning_rate)
 

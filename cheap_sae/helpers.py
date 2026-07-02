@@ -63,22 +63,17 @@ class SAE(nn.Module):
 class MLPSAE(nn.Module):
     def __init__(self, d1: int, d2: int, init: str = "rand", eye_noise: float = 1e-3):
         super().__init__()
-        if init == "eye":
-            # Pure identity makes z_prime == z_orig exactly (and inv/ortho penalties minimal),
-            # so most losses/gradients start at or near zero; add tiny noise to break symmetry.
-            U = torch.eye(d1) + eye_noise * torch.randn(d1, d1)
-            S = torch.eye(d2) + eye_noise * torch.randn(d2, d2)
-        elif init == "rand":
-            U = torch.randn(d1, d1) * 0.01 + torch.eye(d1)
-            S = torch.randn(d2, d2) * 0.01 + torch.eye(d2)
+        if init == "rand":
+            U = torch.randn(d1, d1) * eye_noise + torch.eye(d1)
+            S = torch.randn(d2, d1) * eye_noise + torch.eye(min(d1, d2))
         else:
-            raise ValueError("init must be 'eye' or 'rand'")
+            raise ValueError("init must be 'rand'")
         self.U = nn.Parameter(U)
         self.S = nn.Parameter(S)
     
     def forward(self, X: torch.Tensor, W: torch.tensor, b: torch.tensor):
         sparse = X @ self.U.T
-        recon = (sparse @ W.T + b) @ self.S.T
+        recon = sparse @ self.S.T
         return sparse, recon
 
 
