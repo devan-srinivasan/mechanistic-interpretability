@@ -71,7 +71,7 @@ class MLPSAE(nn.Module):
         self.U = nn.Parameter(U)
         self.S = nn.Parameter(S)
     
-    def forward(self, X: torch.Tensor, W: torch.tensor, b: torch.tensor):
+    def forward(self, X: torch.Tensor):
         sparse = X @ self.U.T
         recon = sparse @ self.S.T
         return sparse, recon
