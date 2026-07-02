@@ -25,7 +25,12 @@ def parse_args():
 
     p.add_argument("--layer", type=int, default=6, help="0-indexed BERT layer")
     p.add_argument("--module", type=str, default="q", help="Which attention module to target: q, k, v, o, mlp1, mlp2")
-    p.add_argument("--dims", type=list[int], default=[768], help="List of dimensions for the SAE (default: [768])")
+    p.add_argument(
+        "--dims",
+        nargs="+",
+        type=int,
+        required=True,
+    )
 
     p.add_argument("--lambda_sparse", type=float, default=1.0)
     p.add_argument("--lambda_inv", type=float, default=1.0)
