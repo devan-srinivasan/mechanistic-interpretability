@@ -310,7 +310,7 @@ for epoch in range(args.num_epochs):
             "model_name": "bert-base-cased",
             "dataset_name": "Salesforce/wikitext",
             "dataset_config": "wikitext-103-v1",
-            "d": d,
+            "dims": args.dims,
             "lambda_sparse": args.lambda_sparse,
             "lambda_inv": args.lambda_inv,
             "lambda_rel_match": args.lambda_rel_match,
