@@ -168,8 +168,6 @@ run.config.update(wandb_config, allow_val_change=True)
 # -------------------------
 # Training loop
 # -------------------------
-model_hidden_size = model.config.hidden_size
-assert model_hidden_size == d
 
 global_step = 0
 
